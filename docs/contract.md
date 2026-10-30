@@ -6,7 +6,7 @@ This document defines the stable external behavior. It does not explain internal
 
 ## Model-facing tool text
 
-The extension uses one concise tool description and two guidelines. The question schema has no question limit and omits option `value`. It derives unique machine values from labels while accepting valid explicit values from older calls. The description limits asks to decisions needed now. For a specific requested decision, ask that question only, without other requirements or confirmation questions. This does not limit explicitly requested multi-question rounds. General follow-up rules live in guideline 2. Elaborate results add an answer-first instruction to model-facing content without changing transcript rendering. Configuration guidance is conditional; the system prompt is never replaced.
+The extension uses one concise tool description and three guidelines. The question schema has no question limit and omits option `value`. It derives unique machine values from labels while accepting valid explicit values from older calls. The description limits asks to decisions needed now. For a specific requested decision, ask that question only, without other requirements or confirmation questions. This does not limit explicitly requested multi-question rounds. The description also states what the user sees: the agent's message text, then the form, which shows only prompts, option labels and descriptions and disappears after Submit. Guideline 2 requires the context as message text before every call; context only in thinking, tool arguments, tool output, or files does not count. General follow-up rules live in guideline 3. Elaborate results add an answer-first instruction to model-facing content without changing transcript rendering. Configuration guidance is conditional; the system prompt is never replaced.
 
 ## Input
 
@@ -206,7 +206,8 @@ While the TUI or RPC ask flow is open, `ask_user` sends a tool update after each
 - option-targeted elaboration items include the specific noted option plus whether it is currently selected
 - question-targeted elaboration items include whether the question already has a committed answer
 - `elaboration.instruction` tells the agent to answer the clarification directly first, then re-ask only the affected questions if a choice is still needed; elaborate result `content` also carries the short answer-first instruction so the model receives it
-- when a choice is still needed after an answer or note, agents should use another structured `ask_user` call, not plain-text choices
+- when a submitted answer or note asks a question or asks for an explanation, agents answer it in message text first; when the user asks only for an explanation or asks for no form, agents do not call `ask_user`
+- when a choice is still needed after that, agents should use another structured `ask_user` call, not plain-text choices
 - when prior answers narrow the branch, agents should bundle the next 2-3 related unresolved decisions into one follow-up when possible; ask one at a time only when the next question materially depends on the previous answer
 - `elaboration` is only present when `mode === "elaborate"`
 - elaborate `content` text and transcript rendering describe each note directly using the full question prompt and option label, and include the current committed answer text when available, instead of a generic elaboration banner
