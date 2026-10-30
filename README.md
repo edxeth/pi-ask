@@ -3,7 +3,7 @@
 [![last commit](https://badgen.net/github/last-commit/FasalZein/pi-ask)](https://github.com/FasalZein/pi-ask/commits/main)
 [![stars](https://badgen.net/github/stars/FasalZein/pi-ask)](https://github.com/FasalZein/pi-ask/stargazers)
 
-pi-ask is a [pi](https://pi.dev) extension. It gives the agent an `ask_user` tool. When the agent needs a decision, it stops and asks you structured questions in a terminal UI. You answer, and the agent continues with normalized answers instead of a guess.
+pi-ask is a [pi](https://pi.dev) extension. It gives the agent an `ask_user` tool. When the agent needs a decision, it stops and asks you structured questions in a terminal UI. Its explanation appears in the chat above the form, and the form holds only the questions and options. You answer, and the agent continues with normalized answers instead of a guess.
 
 ## Install
 

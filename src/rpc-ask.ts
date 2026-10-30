@@ -5,7 +5,6 @@ import {
 	type RemoteAskFlowHandle,
 	type RemoteAskResponse,
 	type RemoteAskRuntime,
-	type RemoteAskSource,
 } from "./remote-ask.ts";
 import { createInitialState } from "./state/create.ts";
 import { toAskResult } from "./state/result.ts";
@@ -18,8 +17,6 @@ interface RpcAskOptions {
 	remote?: RemoteAskRuntime;
 	shutdownSignal?: AbortSignal;
 	signal?: AbortSignal;
-	/** Remote lifecycle source; a tool call by default. */
-	source?: RemoteAskSource;
 	toolCallId: string;
 }
 
@@ -78,7 +75,7 @@ async function collectRpcAsk(
 			return await ended;
 		}
 		remoteFlow = options.remote?.startFlow({
-			source: options.source ?? "tool",
+			source: "tool",
 			toolCallId: options.toolCallId,
 			title: state.title,
 			questions: state.questions,

@@ -20,15 +20,15 @@ process.env.PI_ASK_PROMPT_MODE = "full";
 askExtension(pi);
 const submitted = { cancelled: false, mode: "submit", questions: [], answers: {} };
 const elaborated = { ...submitted, mode: "elaborate", elaboration: { items: [{ target: { kind: "question" }, question: { id: "q", label: "Goal", prompt: "Choose a goal", type: "single", options: [{ value: "speed", label: "Speed" }] }, note: "Why?", answered: false }] } };
-const raw = { questions: [{ id: "q", prompt: "Pick", options: [
+const raw = { context: "Pick one.", questions: [{ id: "q", prompt: "Pick", options: [
   { label: "Offline only" }, { label: "Offline only" },
   { value: "offline-only-2", label: "Explicit" }, { label: "Offline only" },
 ] }] };
 const prepared = tools[0].prepareArguments(raw);
 const response = await tools[0].execute("missing-value", prepared, undefined, undefined, { mode: "print" });
-const blank = tools[0].prepareArguments({ questions: [{ id: "q", prompt: "Pick", options: [{ value: "", label: "Blank value" }] }] });
+const blank = tools[0].prepareArguments({ context: "Pick one.", questions: [{ id: "q", prompt: "Pick", options: [{ value: "", label: "Blank value" }] }] });
 const blankResponse = await tools[0].execute("blank-value", blank, undefined, undefined, { mode: "print" });
-const invalid = tools[0].prepareArguments({ questions: [{ id: "q", prompt: "Pick", options: [{ value: 42, label: "Number" }] }] });
+const invalid = tools[0].prepareArguments({ context: "Pick one.", questions: [{ id: "q", prompt: "Pick", options: [{ value: 42, label: "Number" }] }] });
 const invalidResponse = tools[0].parameters.properties.questions.items.properties.options.items.properties.value === undefined
   ? await tools[0].execute("invalid-value", invalid, undefined, undefined, { mode: "print" }) : undefined;
 console.log(JSON.stringify({ tools: tools.map(({ description, promptSnippet, promptGuidelines, parameters }) => ({ description, promptSnippet, promptGuidelines, parameters })), result: successfulResponse(submitted).content[0].text, elaborated: successfulResponse(elaborated).content[0].text, prepared, response: { text: response.content[0].text, details: response.details }, blankResponse: blankResponse.content[0].text, invalidResponse: invalidResponse?.content[0].text }));
@@ -60,9 +60,11 @@ function registeredText(mode: string | undefined) {
 const compactGuideline =
 	"Use `ask_user` before preference-sensitive decisions (scope, tone, UX, naming, architecture, docs, implementation direction), or when several valid directions exist; ask 1-3 concise questions instead of choosing one path yourself.";
 const contextGuideline =
-	"Put each question and its options only in the `ask_user` form, and mark your recommended option there. Put everything that explains only in your message text before the call: what you found, why each decision matters, why you recommend an option, hints, and the answer to anything the user asked. Never restate a question or list its options in the text, even when a skill or prompt gives a text format for questions. Context that exists only in your thinking, tool output, or files does not count.";
+	"Put each question and its options only in the `ask_user` form, and mark your recommended option there. Put everything that explains only in `context`, not in message text. Never restate a question or list its options in `context` or message text, even when a skill or prompt gives a text format for questions. The user does not see your thinking, tool output, or files.";
 const followUpGuideline =
-	"If a submitted answer or note asks a question or asks for an explanation, answer it in message text first. If the user asks only for an explanation, or asks you not to use the form, answer in message text and do not call `ask_user`. If a choice is still needed, use another structured `ask_user` call, not plain-text choices in chat. When prior answers narrow the branch, bundle the next 2-3 related unresolved decisions into one follow-up when possible; ask one at a time only when the next question materially depends on the previous answer.";
+	"If a submitted answer or note asks a question or asks for an explanation, answer it in `context` when you ask again, or in message text when you do not. If the user asks only for an explanation, or asks you not to use the form, do not call `ask_user`. If a choice is still needed, use another structured `ask_user` call, not plain-text choices in chat. When prior answers narrow the branch, bundle the next 2-3 related unresolved decisions into one follow-up when possible; ask one at a time only when the next question materially depends on the previous answer.";
+const contextDescription =
+	"Required Markdown that the chat shows as your message just above the form: what you found, why each decision matters, why you recommend an option, hints, and the answer to anything the user asked.";
 const questionsDescription =
 	"Questions to ask in the interactive clarification flow";
 const labelDescription =
@@ -70,7 +72,7 @@ const labelDescription =
 const derivedValuePattern = /Offline only \[offline-only\]/;
 const blankValuePattern = /option 1: value is required/;
 const recommendation =
-	"Optional. Set true on an option you recommend for a grounded reason; give the reason in your message text.";
+	"Optional. Set true on an option you recommend for a grounded reason; give the reason in `context`.";
 
 const compact = registeredText("compact");
 
@@ -89,6 +91,10 @@ test("registered tool uses the concise text and label-only schema", () => {
 		questionsDescription
 	);
 	assert.equal(
+		tool.parameters.properties.context.description,
+		contextDescription
+	);
+	assert.equal(
 		Object.hasOwn(tool.parameters.properties.questions, "maxItems"),
 		false
 	);
@@ -105,6 +111,7 @@ test("registered tool uses the concise text and label-only schema", () => {
 	assert.equal(JSON.stringify(tool).includes('"value"'), false);
 	assert.equal(
 		Value.Check(tool.parameters, {
+			context: "Pick one.",
 			questions: [
 				{
 					id: "q",
@@ -117,6 +124,7 @@ test("registered tool uses the concise text and label-only schema", () => {
 	);
 	assert.equal(
 		Value.Check(tool.parameters, {
+			context: "Pick one.",
 			questions: [{ id: "q", prompt: "Pick", options: [{ value: "a" }] }],
 		}),
 		false
@@ -141,11 +149,18 @@ test("schema has no question limit", () => {
 	}));
 	assert.equal(
 		Value.Check(compact.tools[0].parameters, {
+			context: "Pick one.",
 			questions: questions.slice(0, 4),
 		}),
 		true
 	);
-	assert.equal(Value.Check(compact.tools[0].parameters, { questions }), true);
+	assert.equal(
+		Value.Check(compact.tools[0].parameters, {
+			context: "Pick one.",
+			questions,
+		}),
+		true
+	);
 });
 
 test("option preparation fills only missing values and avoids explicit and derived collisions", () => {
@@ -255,12 +270,21 @@ test("rule inventory has a single observed home for each rule", () => {
 			"ask one at a time only when the next question materially depends",
 		],
 		["G12", "guideline.2", "only in the `ask_user` form"],
-		["G13", "guideline.3", "answer it in message text first"],
+		[
+			"G13",
+			"guideline.3",
+			"answer it in `context` when you ask again, or in message text when you do not",
+		],
 		["G14", "guideline.3", "do not call `ask_user`"],
 		[
 			"G15",
 			"guideline.2",
-			"Never restate a question or list its options in the text",
+			"Never restate a question or list its options in `context` or message text",
+		],
+		[
+			"G16",
+			"guideline.2",
+			"Put everything that explains only in `context`, not in message text",
 		],
 		["D1", "parameters.questions[].prompt", "Required direct question"],
 		[
@@ -269,7 +293,16 @@ test("rule inventory has a single observed home for each rule", () => {
 			"unique machine identifier is derived from this label",
 		],
 		["D3", "parameters.questions[].options[].label", "shown in the list"],
-		["D4", "description", "The user reads your message text, then this form"],
+		[
+			"D4",
+			"description",
+			"The user reads `context` in the chat, then this form",
+		],
+		[
+			"D5",
+			"parameters.context",
+			"Required Markdown that the chat shows as your message just above the form",
+		],
 		["C1", "config", "first read"],
 		["E1", "result.elaborated", "First answer the user's note directly"],
 	];
@@ -291,10 +324,12 @@ test("rule inventory has a single observed home for each rule", () => {
 			"G13",
 			"G14",
 			"G15",
+			"G16",
 			"D1",
 			"D2",
 			"D3",
 			"D4",
+			"D5",
 			"C1",
 			"E1",
 		]

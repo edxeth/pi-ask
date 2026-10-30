@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+	initTheme,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
 import { registerAskTool } from "../src/ask-tool.ts";
+import { askToolCallText, askToolResultText } from "../src/ask-tool-helpers.ts";
 import { AskOptionSchema, AskParamsSchema } from "../src/schema.ts";
 import type { AskParams } from "../src/types.ts";
-import { sessionWithContext } from "./fixtures/ask-context.ts";
 
 const NON_INTERACTIVE_MESSAGE_RE =
 	/Needs user input: ask_user requires interactive TUI mode\./;
@@ -21,6 +26,15 @@ const EMPTY_QUESTIONS_RE = /questions: At least one question is required/;
 const INVALID_TYPE_RE =
 	/questions\[0\]\.type: Question 1: invalid type "grid"; expected "single", "multi", or "preview"/;
 const HAS_UI = "hasUI";
+const CONTEXT = "Speed and safety pull this plan in different directions.";
+const BLANK_CONTEXT_ISSUE = {
+	path: "context",
+	message:
+		"Context is required: write the explanation that the chat shows above the form",
+};
+// Strips SGR escape codes, so rendered rows compare as plain text.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes start with ESC.
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const noop = () => {
 	// intentional test callback
 };
@@ -46,36 +60,36 @@ function registerMockTool() {
 			parameters: Record<string, any>;
 			prepareArguments: (args: unknown) => unknown;
 			promptGuidelines: string[];
-			renderCall: (args: unknown, theme: any) => { text: string };
+			renderCall: (args: unknown, theme: any, state: unknown) => Rendered;
 			renderResult: (
 				result: any,
 				options: unknown,
-				theme: any
-			) => { text: string };
+				theme: any,
+				state: unknown
+			) => Rendered;
+			renderShell?: string;
 		},
 	};
 }
 
-const CALL_IDS = [
-	"call-1",
-	"call-abort",
-	"call-blank-optionals",
-	"call-json",
-	"call-prepared-labels",
-	"call-tui",
-	"tool-answer",
-];
+interface Rendered {
+	render(width: number): string[];
+}
+
+/** Rendered rows without escape codes or trailing padding. */
+function rows(component: Rendered, width = 60): string[] {
+	return component
+		.render(width)
+		.map((line) => line.replace(ANSI_RE, "").trimEnd());
+}
 
 function makeCtx(hasUi: boolean, mode = hasUi ? "tui" : "print"): unknown {
-	return {
-		[HAS_UI]: hasUi,
-		mode,
-		sessionManager: sessionWithContext(...CALL_IDS),
-	};
+	return { [HAS_UI]: hasUi, mode };
 }
 
 function sampleParams(): AskParams {
 	return {
+		context: CONTEXT,
 		title: "Clarify next step",
 		questions: [
 			{
@@ -110,7 +124,7 @@ test("ask option schema and tool guidance support grounded recommendations", () 
 				.properties.recommended.description,
 		].some(
 			(guidance) =>
-				guidance.includes("grounded") && guidance.includes("message text")
+				guidance.includes("grounded") && guidance.includes("`context`")
 		)
 	);
 });
@@ -226,7 +240,6 @@ test("abort closes an open ask and emits remote completion", async () => {
 		{
 			cwd: process.cwd(),
 			mode: "tui",
-			sessionManager: sessionWithContext("call-abort"),
 			ui: {
 				setWorkingVisible() {
 					// Visibility does not affect lifecycle.
@@ -361,7 +374,6 @@ test("ask tool reports a user cancel from the TUI", async () => {
 		{
 			cwd: process.cwd(),
 			mode: "tui",
-			sessionManager: sessionWithContext("call-tui"),
 			ui: {
 				setWorkingVisible() {
 					// Visibility does not affect this tool result test.
@@ -396,153 +408,13 @@ test("ask tool reports a user cancel from the TUI", async () => {
 	assert.equal(result.content[0].text, "User cancelled the ask flow");
 });
 
-const MISSING_CONTEXT_TEXT_RE =
-	/^ask_user did not open\. Since the user's last input your messages contained only \[thinking, toolCall\] blocks and no text/;
-
-function textlessAsk(entryId: string, toolCallId: string) {
-	return {
-		type: "message",
-		id: entryId,
-		message: {
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking: "Explain, then ask." },
-				{ type: "toolCall", id: toolCallId, name: "ask_user", arguments: {} },
-			],
-		},
-	};
-}
-
-function userMessage(entryId: string) {
-	return {
-		type: "message",
-		id: entryId,
-		message: { role: "user", content: [{ type: "text", text: "Plan it" }] },
-	};
-}
-
-function refusalResult(entryId: string, toolCallId: string, details: unknown) {
-	return {
-		type: "message",
-		id: entryId,
-		message: {
-			role: "toolResult",
-			toolCallId,
-			toolName: "ask_user",
-			content: [{ type: "text", text: "ask_user did not open." }],
-			details,
-			isError: true,
-		},
-	};
-}
-
-function contextCheckCtx(branch: unknown[], onOpen: () => void) {
-	return {
-		cwd: process.cwd(),
-		mode: "tui",
-		[HAS_UI]: true,
-		sessionManager: { getBranch: () => branch },
-		ui: {
-			setWorkingVisible: noop,
-			custom() {
-				onOpen();
-				return Promise.resolve({
-					cancelled: true,
-					cancelReason: "user",
-					mode: "submit",
-					questions: [],
-					answers: {},
-				});
-			},
-		},
-	};
-}
-
-test("a TUI ask without message text since the user's input is refused, with no form and no saved payload", async () => {
-	const { tool, entries } = registerMockTool();
-	let opened = false;
-	const result = await tool.execute(
-		"bare-1",
-		sampleParams(),
-		undefined,
-		noop,
-		contextCheckCtx([userMessage("u1"), textlessAsk("a1", "bare-1")], () => {
-			opened = true;
-		})
-	);
-	assert.equal(result.isError, true);
-	assert.equal(result.details.cancelReason, "missing_context");
-	assert.match(result.content[0].text, MISSING_CONTEXT_TEXT_RE);
-	assert.equal(opened, false);
-	assert.deepEqual(entries, []);
-});
-
-test("the second text-less ask after one user input opens the form, and a new input is refused again", async () => {
-	const { tool } = registerMockTool();
-	let opened = 0;
-	const branch: unknown[] = [userMessage("u1"), textlessAsk("a1", "bare-1")];
-	const ctx = contextCheckCtx(branch, () => {
-		opened++;
-	});
-	const first = await tool.execute(
-		"bare-1",
-		sampleParams(),
-		undefined,
-		noop,
-		ctx
-	);
-	branch.push(
-		refusalResult("r1", "bare-1", first.details),
-		textlessAsk("a2", "bare-2")
-	);
-	const second = await tool.execute(
-		"bare-2",
-		sampleParams(),
-		undefined,
-		noop,
-		ctx
-	);
-	branch.push(userMessage("u2"), textlessAsk("a3", "bare-3"));
-	const third = await tool.execute(
-		"bare-3",
-		sampleParams(),
-		undefined,
-		noop,
-		ctx
-	);
-	assert.deepEqual(
-		[
-			first.details.cancelReason,
-			second.details.cancelReason,
-			third.details.cancelReason,
-		],
-		["missing_context", "user", "missing_context"]
-	);
-	assert.equal(opened, 1);
-});
-
-test("non-interactive modes keep the Needs user input result without a context check", async () => {
-	const { tool } = registerMockTool();
-	const result = await tool.execute(
-		"bare-print",
-		sampleParams(),
-		undefined,
-		noop,
-		{
-			mode: "print",
-			sessionManager: { getBranch: () => [] },
-		}
-	);
-	assert.match(result.content[0].text, NON_INTERACTIVE_MESSAGE_RE);
-	assert.equal(result.details.cancelReason, "ui_unavailable");
-});
-
 test("ask tool includes custom answer fallback for preview questions", async () => {
 	const { tool } = registerMockTool();
 
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [
 				{
@@ -568,6 +440,7 @@ test("ask tool rejects invalid payloads before UI opens with structured issues",
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [
 				{
@@ -610,6 +483,7 @@ test("ask tool reports missing option values with structured issues", async () =
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [
 				{
@@ -643,6 +517,7 @@ test("ask tool reports empty questions with structured issues", async () => {
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [],
 		},
@@ -670,6 +545,7 @@ test("ask tool reports invalid question types with structured issues", async () 
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [
 				{
@@ -705,6 +581,7 @@ test("ask tool reports preview validation with structured issues", async () => {
 	const result = await tool.execute(
 		"call-1",
 		{
+			context: CONTEXT,
 			title: "Clarify",
 			questions: [
 				{
@@ -737,6 +614,7 @@ test("ask tool reports preview validation with structured issues", async () => {
 test("ask tool accepts blank optional presentation fields", async () => {
 	const { tool } = registerMockTool();
 	const params: AskParams = {
+		context: CONTEXT,
 		title: "   ",
 		questions: [
 			{
@@ -771,6 +649,7 @@ test("ask tool accepts blank optional presentation fields", async () => {
 test("ask tool prepares missing and blank option labels before schema validation", async () => {
 	const { tool } = registerMockTool();
 	const raw = {
+		context: CONTEXT,
 		questions: [
 			{
 				id: "encryption",
@@ -804,7 +683,7 @@ test("ask tool prepares missing and blank option labels before schema validation
 
 test("public schema requires semantic identifiers and labels", () => {
 	const { tool } = registerMockTool();
-	assert.deepEqual(tool.parameters.required, ["questions"]);
+	assert.deepEqual(tool.parameters.required, ["context", "questions"]);
 	const questionSchema = tool.parameters.properties.questions.items;
 	assert.deepEqual(questionSchema.required, ["id", "prompt", "options"]);
 	assert.deepEqual(questionSchema.properties.options.items.required, ["label"]);
@@ -821,75 +700,295 @@ test("public schema requires semantic identifiers and labels", () => {
 	assert.equal(Value.Check(AskParamsSchema, missingLabel), false);
 });
 
-test("ask tool transcript renderers summarize call and cancelled result", () => {
+test("public schema requires context first, before the title and questions", () => {
 	const { tool } = registerMockTool();
-	const theme = {
-		bold: (text: string) => text,
-		fg: (_token: string, text: string) => text,
-	};
-
-	const callText = tool.renderCall(
-		{
-			questions: [
-				{ label: "Goal", options: [], prompt: "Q?", id: "goal" },
-				{ label: "Tone", options: [], prompt: "Q?", id: "tone" },
-			],
-		},
-		theme
-	).text;
-	assert.equal(callText, "ask_user 2 question(s) (Goal, Tone)");
-
-	const resultText = tool.renderResult(
-		{
-			content: [{ type: "text", text: "ignored" }],
-			details: {
-				cancelled: true,
-				mode: "submit",
-				questions: [],
-				answers: {},
-			},
-		},
-		undefined,
-		theme
-	).text;
-	assert.equal(resultText, "Cancelled");
-
-	const invalidText = tool.renderResult(
-		{
-			content: [{ type: "text", text: "ignored" }],
-			details: {
-				cancelled: true,
-				mode: "submit",
-				questions: [],
-				answers: {},
-				error: {
-					kind: "invalid_input",
-					issues: [],
-				},
-			},
-		},
-		undefined,
-		theme
-	).text;
-	assert.equal(invalidText, "Invalid tool payload");
-
-	const schemaErrorText = tool.renderResult(
-		{
-			content: [
-				{
-					type: "text",
-					text: 'Validation failed for tool "ask_user": missing label',
-				},
-			],
-			details: {},
-		},
-		undefined,
-		theme
-	).text;
+	assert.deepEqual(Object.keys(tool.parameters.properties), [
+		"context",
+		"title",
+		"questions",
+	]);
+	assert.equal(tool.parameters.properties.context.type, "string");
+	const { questions } = sampleParams();
+	assert.equal(Value.Check(tool.parameters, { questions }), false);
 	assert.equal(
-		schemaErrorText,
-		'Validation failed for tool "ask_user": missing label'
+		Value.Check(tool.parameters, { context: CONTEXT, questions }),
+		true
 	);
+});
+
+test("an ask without context returns an invalid payload, opens no form and saves no payload", async () => {
+	for (const context of [undefined, "", " \n\t "]) {
+		const { tool, entries } = registerMockTool();
+		let opened = false;
+		const result = await tool.execute(
+			"call-blank-context",
+			{ ...sampleParams(), context },
+			undefined,
+			noop,
+			{
+				cwd: process.cwd(),
+				mode: "tui",
+				[HAS_UI]: true,
+				ui: {
+					setWorkingVisible: noop,
+					custom() {
+						opened = true;
+					},
+				},
+			}
+		);
+		assert.equal(result.isError, true, String(context));
+		assert.equal(result.details.cancelReason, "invalid_input");
+		assert.deepEqual(result.details.error.issues, [BLANK_CONTEXT_ISSUE]);
+		assert.equal(
+			result.content[0].text,
+			`Invalid ask_user payload:\n- context: ${BLANK_CONTEXT_ISSUE.message}`
+		);
+		assert.equal(opened, false);
+		assert.deepEqual(entries, []);
+	}
+});
+
+test("a blank context is reported with the question issues in one result", async () => {
+	const { tool } = registerMockTool();
+	const result = await tool.execute(
+		"call-all-issues",
+		{ questions: [] },
+		undefined,
+		noop,
+		makeCtx(false)
+	);
+	assert.deepEqual(result.details.error.issues, [
+		BLANK_CONTEXT_ISSUE,
+		{ path: "questions", message: "At least one question is required" },
+	]);
+});
+
+const plainTheme = {
+	bold: (text: string) => text,
+	fg: (_token: string, text: string) => text,
+	bg: (token: string, text: string) => `<${token}>${text}`,
+};
+const pending = { isPartial: true, isError: false };
+const succeeded = { isPartial: false, isError: false };
+const failed = { isPartial: false, isError: true };
+const twoQuestions = [
+	{ label: "Goal", options: [], prompt: "Q?", id: "goal" },
+	{ label: "Tone", options: [], prompt: "Q?", id: "tone" },
+];
+const cancelledResult = {
+	content: [{ type: "text", text: "ignored" }],
+	details: { cancelled: true, mode: "submit", questions: [], answers: {} },
+};
+
+test("ask_user draws its own rows: the context as a message above the tool header", () => {
+	// Markdown rows use pi's active theme, as assistant messages do.
+	initTheme("dark");
+	const { tool } = registerMockTool();
+	assert.equal(tool.renderShell, "self");
+	assert.deepEqual(
+		rows(
+			tool.renderCall(
+				{
+					context: "The ADR names **deepseek-v4.1-flash**.",
+					questions: twoQuestions,
+				},
+				plainTheme,
+				pending
+			)
+		),
+		[
+			" The ADR names deepseek-v4.1-flash.",
+			"",
+			" ask_user 2 question(s) (Goal, Tone)",
+		]
+	);
+});
+
+test("a call without context shows only the tool header", () => {
+	const { tool } = registerMockTool();
+	for (const context of [undefined, " \n "]) {
+		assert.deepEqual(
+			rows(
+				tool.renderCall(
+					{ context, questions: twoQuestions },
+					plainTheme,
+					pending
+				)
+			),
+			[" ask_user 2 question(s) (Goal, Tone)"],
+			String(context)
+		);
+	}
+});
+
+test("a finished call puts its header and result in a box with the result's background", () => {
+	initTheme("dark");
+	const { tool } = registerMockTool();
+	const call = { context: "Read this.", questions: twoQuestions };
+	assert.deepEqual(rows(tool.renderCall(call, plainTheme, succeeded)), [
+		" Read this.",
+		"",
+		"<toolSuccessBg>",
+		"<toolSuccessBg> ask_user 2 question(s) (Goal, Tone)",
+	]);
+	assert.deepEqual(
+		rows(tool.renderResult(cancelledResult, undefined, plainTheme, succeeded)),
+		["<toolSuccessBg> Cancelled", "<toolSuccessBg>"]
+	);
+	assert.deepEqual(rows(tool.renderCall(call, plainTheme, failed)).slice(2), [
+		"<toolErrorBg>",
+		"<toolErrorBg> ask_user 2 question(s) (Goal, Tone)",
+	]);
+	const invalid = {
+		content: [{ type: "text", text: "ignored" }],
+		details: {
+			...cancelledResult.details,
+			error: { kind: "invalid_input", issues: [] },
+		},
+	};
+	assert.deepEqual(
+		rows(tool.renderResult(invalid, undefined, plainTheme, failed)),
+		["<toolErrorBg> Invalid tool payload", "<toolErrorBg>"]
+	);
+	const schemaError = {
+		content: [
+			{
+				type: "text",
+				text: 'Validation failed for tool "ask_user": missing label',
+			},
+		],
+		details: {},
+	};
+	assert.deepEqual(
+		rows(tool.renderResult(schemaError, undefined, plainTheme, failed)),
+		[
+			'<toolErrorBg> Validation failed for tool "ask_user": missing label',
+			"<toolErrorBg>",
+		]
+	);
+});
+
+test("answers reported while the form is open show without a box", () => {
+	const { tool } = registerMockTool();
+	assert.deepEqual(
+		rows(tool.renderResult(cancelledResult, undefined, plainTheme, pending)),
+		[" Cancelled"]
+	);
+});
+
+test("ask_user rows follow pi's tool padding setting", () => {
+	initTheme("dark");
+	const { tool } = registerMockTool();
+	const call = { context: "Read this.", questions: [] };
+	assert.deepEqual(
+		rows(tool.renderCall(call, plainTheme, { ...pending, outputPad: 3 })),
+		["   Read this.", "", "   ask_user 0 question(s)"]
+	);
+	assert.deepEqual(
+		rows(
+			tool.renderCall(call, plainTheme, { ...succeeded, outputPad: 3 })
+		).slice(2),
+		["<toolSuccessBg>", "<toolSuccessBg>   ask_user 0 question(s)"]
+	);
+});
+
+test("a finished ask_user call draws the box of pi's default tool shell below its context", () => {
+	initTheme("dark");
+	const { tool } = registerMockTool();
+	const ui = { requestRender: noop };
+	const args = { context: "Read this first.", questions: twoQuestions };
+	const ours = new ToolExecutionComponent(
+		"ask_user",
+		"call-ours",
+		args,
+		{},
+		tool as never,
+		ui as never,
+		process.cwd()
+	);
+	// The default shell around the plain text rows that ask_user drew before it had context.
+	const reference = new ToolExecutionComponent(
+		"ask_user",
+		"call-reference",
+		args,
+		{},
+		{
+			renderShell: "default",
+			renderCall: (callArgs: AskParams, theme: any) =>
+				new Text(askToolCallText(callArgs, theme), 0, 0),
+			renderResult: (result: any, _options: unknown, theme: any) =>
+				new Text(askToolResultText(result, theme), 0, 0),
+		} as never,
+		ui as never,
+		process.cwd()
+	);
+	for (const component of [ours, reference]) {
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.updateResult({ ...cancelledResult, isError: false } as never);
+	}
+	const ourRows = ours.render(60);
+	const referenceRows = reference.render(60);
+	assert.equal(referenceRows.length, 5);
+	assert.deepEqual(ourRows.slice(-4), referenceRows.slice(-4));
+	assert.deepEqual(
+		ourRows.slice(0, -4).map((line) => line.replace(ANSI_RE, "").trimEnd()),
+		["", " Read this first.", ""]
+	);
+});
+
+test("pi's HTML export draws a finished call without a pending background", async () => {
+	initTheme("dark");
+	const { tool } = registerMockTool();
+	// pi exports no API for its HTML exporter; this loads the module that /export uses.
+	const exporter = new URL(
+		"core/export-html/tool-renderer.js",
+		import.meta.resolve("@earendil-works/pi-coding-agent")
+	);
+	const { createToolHtmlRenderer } = await import(exporter.href);
+	const rgb = {
+		toolPendingBg: "1,1,1",
+		toolSuccessBg: "2,2,2",
+		toolErrorBg: "3,3,3",
+	} as const;
+	const exportTheme = {
+		...plainTheme,
+		bg: (token: keyof typeof rgb, text: string) =>
+			`\x1b[48;2;${rgb[token].replaceAll(",", ";")}m${text}\x1b[49m`,
+	};
+	const html = createToolHtmlRenderer({
+		// pi 0.99 names this lookup getToolDefinition; pi 1.0 renamed it getToolRenderers.
+		getToolDefinition: () => tool,
+		getToolRenderers: () => tool,
+		theme: exportTheme,
+		cwd: process.cwd(),
+	});
+	const call = html.renderCall("call-1", "ask_user", {
+		context: "Read this first.",
+		questions: twoQuestions,
+	});
+	assert.ok(call.includes("Read this first."));
+	assert.ok(call.includes("ask_user 2 question(s)"));
+	assert.equal(call.includes("background-color"), false);
+	const content = cancelledResult.content;
+	for (const [isError, token] of [
+		[false, "toolSuccessBg"],
+		[true, "toolErrorBg"],
+	] as const) {
+		const result = html.renderResult(
+			"call-1",
+			"ask_user",
+			content,
+			cancelledResult.details,
+			isError
+		);
+		assert.ok(
+			result.expanded.includes(`background-color:rgb(${rgb[token]})`),
+			token
+		);
+		assert.equal(result.expanded.includes("rgb(1,1,1)"), false);
+	}
 });
 
 test("ask_user asks the skill provider to deliver after a submitted tool result", async () => {
@@ -973,7 +1072,6 @@ test("ask_user asks the skill provider to deliver after a submitted tool result"
 			{
 				cwd: process.cwd(),
 				mode: "tui",
-				sessionManager: sessionWithContext("tool-answer"),
 				ui: {
 					setWorkingVisible: noop,
 					custom: (callback: (...args: any[]) => unknown) =>

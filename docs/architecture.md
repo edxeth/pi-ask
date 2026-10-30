@@ -15,8 +15,6 @@ The codebase is split so the implementation reads through file boundaries and na
 
 - `src/index.ts` — extension entrypoint
 - `src/ask-tool.ts` — tool registration, non-interactive fallback, transcript rendering, ask payload capture
-- `src/ask-context-check.ts` — what the user could read before an ask: assistant text since the last user input on the branch
-- `src/deferred-ask.ts` — refusal bookkeeping per user input, and the refused form opened when the explanation turn settles
 - `src/answer-commands.ts` — `/answer`, `/answer:again`, and `/ask:replay` command wiring
 - `src/answer-extraction.ts` — configured, session-scope-aware extraction model selection, synthetic `ask_user` tool-call extraction, and tolerant text fallback
 - `src/ask-payload-store.ts` — branch-aware persisted ask payload lookup

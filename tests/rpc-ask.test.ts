@@ -8,7 +8,6 @@ import {
 	PI_ASK_SUBMIT_EVENT,
 } from "../src/remote-ask.ts";
 import type { AskParams } from "../src/types.ts";
-import { sessionWithContext } from "./fixtures/ask-context.ts";
 
 const HAS_UI = "hasUI";
 
@@ -83,13 +82,12 @@ function setup(params: AskParams, signal = new AbortController()) {
 	};
 	const pending = tool.execute(
 		"rpc-call",
-		params,
+		{ context: "The RPC client shows this before the dialogs.", ...params },
 		signal.signal,
 		(update: (typeof updates)[number]) => updates.push(update),
 		{
 			mode: "rpc",
 			[HAS_UI]: true,
-			sessionManager: sessionWithContext("rpc-call"),
 			ui,
 		}
 	);

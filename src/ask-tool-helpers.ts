@@ -3,9 +3,17 @@ import { dirname } from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	getMarkdownTheme,
 	stripFrontmatter,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	Box,
+	Container,
+	Markdown,
+	Spacer,
+	Text,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { UI_DIMENSIONS } from "./constants/ui.ts";
 import { ASK_ELABORATION_INSTRUCTION } from "./prompt-text.ts";
 import { renderResultText } from "./result.ts";
@@ -46,6 +54,31 @@ export function validateParams(
 	};
 }
 
+const BLANK_CONTEXT_MESSAGE =
+	"Context is required: write the explanation that the chat shows above the form";
+
+/**
+ * validateParams for an `ask_user` call, which also requires a non-blank `context`: blank
+ * text would leave the user without an explanation. Stored payloads and `/answer` forms have none.
+ */
+export function validateToolParams(
+	params: AskParams,
+	options: ValidateParamsOptions
+): ReturnType<typeof validateParams> {
+	const validation = validateParams(params, options);
+	const missingContext =
+		typeof params.context === "string" && params.context.trim()
+			? []
+			: [{ path: "context", message: BLANK_CONTEXT_MESSAGE }];
+	if (missingContext.length === 0) {
+		return validation;
+	}
+	return {
+		ok: false,
+		issues: [...missingContext, ...(validation.ok ? [] : validation.issues)],
+	};
+}
+
 export function invalidPayloadResponse(
 	params: AskParams,
 	issues: AskValidationIssue[]
@@ -69,28 +102,6 @@ export function abortedResponse(params: AskParams) {
 			cancelReason: "aborted" as const,
 		},
 	};
-}
-
-/** The form stays closed: the user has read nothing since their last input. */
-export function missingContextResponse(
-	params: AskParams,
-	blockTypes: readonly string[]
-) {
-	return {
-		content: [
-			{ type: "text" as const, text: formatMissingContext(blockTypes) },
-		],
-		details: {
-			...toAskResult(createInitialState(params)),
-			cancelled: true,
-			cancelReason: "missing_context" as const,
-		},
-		isError: true,
-	};
-}
-
-function formatMissingContext(blockTypes: readonly string[]): string {
-	return `ask_user did not open. Since the user's last input your messages contained only [${blockTypes.join(", ")}] blocks and no text, so the user has not read any explanation. Thinking, tool arguments and tool output are not shown as a reply. Reply now with the explanation as text: what you found, why the decision matters, why you recommend an option, and the answer to anything the user asked. Do not restate the questions or list their options, because the form shows them. Then end your turn without calling any tool. pi-ask opens this form for the user right after your reply, so do not mention that it did not open.`;
 }
 
 export function nonInteractiveResponse(
@@ -230,8 +241,72 @@ function isReply(
 
 type ToolTheme = ExtensionContext["ui"]["theme"];
 
-export function renderAskToolCall(args: unknown, theme: ToolTheme) {
+/** What pi's tool render context says about the row. */
+interface ToolRowState {
+	isError: boolean;
+	isPartial: boolean;
+}
+
+// pi pads tool rows by its outputPad setting. Hosts from before that setting pad by one
+// column and pass no outputPad.
+const LEGACY_OUTPUT_PAD = 1;
+
+function outputPad(state: ToolRowState): number {
+	return "outputPad" in state && typeof state.outputPad === "number"
+		? state.outputPad
+		: LEGACY_OUTPUT_PAD;
+}
+
+/**
+ * A finished call's rows in the box that pi's default tool shell draws: the background of the
+ * result's state, one blank row above the header and one below the result. A pending call has
+ * no box. pi's HTML exporter renders every call as pending and puts it in its own status box,
+ * so a pending background there would mark finished calls as running.
+ */
+function finishedRows(
+	theme: ToolTheme,
+	state: ToolRowState,
+	...children: Array<Text | Spacer>
+): Box {
+	const token = state.isError ? "toolErrorBg" : "toolSuccessBg";
+	const box = new Box(outputPad(state), 0, (text: string) =>
+		theme.bg(token, text)
+	);
+	for (const child of children) {
+		box.addChild(child);
+	}
+	return box;
+}
+
+/**
+ * ask_user draws its own rows (`renderShell: "self"`): the call's `context` renders as a
+ * message, then the header row.
+ */
+export function renderAskToolCall(
+	args: unknown,
+	theme: ToolTheme,
+	state: ToolRowState
+) {
 	const params = args as AskParams;
+	const pad = outputPad(state);
+	const header = askToolCallText(params, theme);
+	const headerRows = state.isPartial
+		? new Text(header, pad, 0)
+		: finishedRows(theme, state, new Spacer(1), new Text(header, 0, 0));
+	const context =
+		typeof params.context === "string" ? params.context.trim() : "";
+	if (!context) {
+		return headerRows;
+	}
+	const rows = new Container();
+	rows.addChild(new Markdown(context, pad, 0, getMarkdownTheme()));
+	rows.addChild(new Spacer(1));
+	rows.addChild(headerRows);
+	return rows;
+}
+
+/** The header text of an `ask_user` call: the question count and labels. */
+export function askToolCallText(params: AskParams, theme: ToolTheme): string {
 	const labels = Array.isArray(params.questions)
 		? params.questions
 				.map(
@@ -248,28 +323,39 @@ export function renderAskToolCall(args: unknown, theme: ToolTheme) {
 			` (${truncateToWidth(labels, UI_DIMENSIONS.callLabelTruncateWidth)})`
 		);
 	}
-	return new Text(text, 0, 0);
+	return text;
 }
 
+interface AskToolResultView {
+	content: Array<{ type?: string; text?: string }>;
+	details?: AskResult;
+}
+
+/** The result rows continue the header rows: in the same box once the call has finished. */
 export function renderAskToolResult(
-	result: {
-		content: Array<{ type?: string; text?: string }>;
-		details?: AskResult;
-	},
+	result: AskToolResultView,
 	_options: unknown,
-	theme: ToolTheme
+	theme: ToolTheme,
+	state: ToolRowState
 ) {
+	const text = askToolResultText(result, theme);
+	return state.isPartial
+		? new Text(text, outputPad(state), 0)
+		: finishedRows(theme, state, new Text(text, 0, 0), new Spacer(1));
+}
+
+/** The transcript text of an `ask_user` result; pi's raw text when schema validation failed. */
+export function askToolResultText(
+	result: AskToolResultView,
+	theme: ToolTheme
+): string {
 	const details = result.details;
 	if (!(details && Array.isArray(details.questions))) {
 		const text = result.content[0];
-		return new Text(text?.type === "text" ? (text.text ?? "") : "", 0, 0);
+		return text?.type === "text" ? (text.text ?? "") : "";
 	}
 	const text = renderResultText(details);
-	return new Text(
-		details.error || details.cancelled ? theme.fg("warning", text) : text,
-		0,
-		0
-	);
+	return details.error || details.cancelled ? theme.fg("warning", text) : text;
 }
 
 function errorResultDetails(

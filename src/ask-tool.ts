@@ -3,20 +3,17 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { findAskContext } from "./ask-context-check.ts";
 import { appendAskPayload } from "./ask-payload-store.ts";
 import {
 	abortedResponse,
 	invalidPayloadResponse,
-	missingContextResponse,
 	nonInteractiveResponse,
 	renderAskToolCall,
 	renderAskToolResult,
 	successfulResponse,
-	validateParams,
+	validateToolParams,
 } from "./ask-tool-helpers.ts";
 import { getAskConfigStore } from "./config/store.ts";
-import { DeferredAsks } from "./deferred-ask.ts";
 import {
 	ASK_TOOL_DESCRIPTION,
 	ASK_TOOL_PROMPT_GUIDELINES,
@@ -33,8 +30,7 @@ import { runAskFlow } from "./ui/controller.ts";
 export function registerAskTool(
 	pi: ExtensionAPI,
 	remoteAsk?: RemoteAskRuntime,
-	shutdownSignal?: AbortSignal,
-	deferredAsks: DeferredAsks = new DeferredAsks()
+	shutdownSignal?: AbortSignal
 ) {
 	pi.registerTool({
 		executionMode: "sequential",
@@ -50,7 +46,6 @@ export function registerAskTool(
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			executeAskTool(
 				pi,
-				deferredAsks,
 				toolCallId,
 				params as AskParams,
 				signal,
@@ -59,30 +54,11 @@ export function registerAskTool(
 				remoteAsk,
 				shutdownSignal
 			),
+		// The call row shows `context` as a message above the tool row, outside pi's tool box.
+		renderShell: "self",
 		renderCall: renderAskToolCall,
 		renderResult: renderAskToolResult,
 	});
-}
-
-function isInteractive(ctx: ExtensionContext): boolean {
-	return ctx.mode === "tui" || (ctx.mode === "rpc" && ctx.hasUI);
-}
-
-function refuseWithoutContext(
-	ctx: ExtensionContext,
-	toolCallId: string,
-	params: AskParams,
-	deferredAsks: DeferredAsks
-) {
-	const context = findAskContext(ctx.sessionManager.getBranch(), toolCallId);
-	// One refusal per user input, so a model that ignores it cannot loop.
-	if (context.hasText || deferredAsks.refused(context.boundaryId)) {
-		// This form opens now, so no refused form waits for the turn to end.
-		deferredAsks.clear();
-		return;
-	}
-	deferredAsks.defer({ boundaryId: context.boundaryId, params, toolCallId });
-	return missingContextResponse(params, context.blockTypes);
 }
 
 async function executeAskTool(
@@ -90,7 +66,6 @@ async function executeAskTool(
 		ExtensionAPI,
 		"appendEntry" | "setLabel" | "exec" | "getCommands" | "events"
 	>,
-	deferredAsks: DeferredAsks,
 	toolCallId: string,
 	params: AskParams,
 	signal: AbortSignal | undefined,
@@ -103,25 +78,18 @@ async function executeAskTool(
 		return abortedResponse(params);
 	}
 	const config = await getAskConfigStore().getConfig();
-	const validation = validateParams(params, {
+	const validation = validateToolParams(params, {
 		presentSingleAsMulti: config.behaviour.presentSingleAsMulti,
 	});
 	if (!validation.ok) {
 		return invalidPayloadResponse(params, validation.issues);
-	}
-	const interactive = isInteractive(ctx);
-	const refusal = interactive
-		? refuseWithoutContext(ctx, toolCallId, params, deferredAsks)
-		: undefined;
-	if (refusal) {
-		return refusal;
 	}
 	appendAskPayload(pi, ctx, {
 		params,
 		source: "tool",
 		sourceEntryId: toolCallId,
 	});
-	if (!interactive) {
+	if (ctx.mode !== "tui" && !(ctx.mode === "rpc" && ctx.hasUI)) {
 		return nonInteractiveResponse(validation.state);
 	}
 	ctx.ui.setWorkingVisible(false);

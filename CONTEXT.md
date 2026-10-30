@@ -20,6 +20,10 @@ _Avoid_: interview, questionnaire, form (when you mean the call)
 The interactive surface that collects answers for one ask, from open to close.
 _Avoid_: form, dialog, modal
 
+**Ask context**:
+The explanation an ask carries in its required `context` argument: findings, why each decision matters, why an option is recommended. The chat shows it as a message above the ask flow; questions and options stay in the ask flow.
+_Avoid_: preamble, message text (when you mean the argument)
+
 **Question**:
 One decision inside an ask, with an id, a prompt, a type, and options.
 
@@ -98,7 +102,7 @@ The single place where a rule lives in the prompt format.
 The model-facing instruction to read the pi-ask configuration doc before changing pi-ask settings or keymaps.
 
 **Follow-up rules**:
-The rules for asking again when a choice is still needed after an answer or note: use another structured `ask_user` call instead of plain-text choices. When prior answers narrow the branch, bundle the next 2-3 related unresolved decisions when possible; ask one at a time only when the next question materially depends on the previous answer. These rules live in guideline 2, not in the `questions` parameter description or results. A per-result hint was removed in #30 because it made models keep asking.
+The rules for answering and asking again after an answer or note: answer a question or explanation request in the ask context when asking again, or in message text otherwise, and use another structured `ask_user` call instead of plain-text choices when a choice is still needed. When prior answers narrow the branch, bundle the next 2-3 related unresolved decisions when possible; ask one at a time only when the next question materially depends on the previous answer. These rules live in guideline 3, not in the `questions` parameter description or results. A per-result hint was removed in #30 because it made models keep asking.
 _Avoid_: follow-up hint
 
 ### Verification

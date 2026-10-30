@@ -6,12 +6,13 @@ This document defines the stable external behavior. It does not explain internal
 
 ## Model-facing tool text
 
-The extension uses one concise tool description and three guidelines. The question schema has no question limit and omits option `value`. It derives unique machine values from labels while accepting valid explicit values from older calls. The description limits asks to decisions needed now. For a specific requested decision, ask that question only, without other requirements or confirmation questions. This does not limit explicitly requested multi-question rounds. The description also states what the user sees: the agent's message text, then the form, which shows only prompts, option labels and descriptions and disappears after Submit. Guideline 2 splits every ask: each question and its options go only in the form, with the recommended option marked, and everything that explains (findings, why a decision matters, why an option is recommended, hints, answers to the user's questions) goes only in the message text before the call. The text never restates a question or lists its options, even when a skill or prompt gives a text format for questions, and context only in thinking, tool output, or files does not count. The `recommended` field asks for the reason in the message text, and an option `description` says what the option means. General follow-up rules live in guideline 3. Elaborate results add an answer-first instruction to model-facing content without changing transcript rendering. Configuration guidance is conditional; the system prompt is never replaced.
+The extension uses one concise tool description and three guidelines. The schema requires a `context` string, which comes first; it has no question limit and omits option `value`. It derives unique machine values from labels while accepting valid explicit values from older calls. The description limits asks to decisions needed now. For a specific requested decision, ask that question only, without other requirements or confirmation questions. This does not limit explicitly requested multi-question rounds. The description also states what the user sees: `context` in the chat, then the form, which shows only prompts, option labels and descriptions and disappears after Submit. The `context` description lists what explains a decision: findings, why each decision matters, why an option is recommended, hints, and answers to the user's questions. Guideline 2 splits every ask: each question and its options go only in the form, with the recommended option marked, and everything that explains goes only in `context`, not in message text. Neither `context` nor message text restates a question or lists its options, even when a skill or prompt gives a text format for questions, and the guideline states that the user does not see thinking, tool output, or files. The `recommended` field asks for the reason in `context`, and an option `description` says what the option means. General follow-up rules live in guideline 3. Elaborate results add an answer-first instruction to model-facing content without changing transcript rendering. Configuration guidance is conditional; the system prompt is never replaced.
 
 ## Input
 
 ```ts
 {
+  context: string;
   title?: string;
   questions: Array<{
     id: string;
@@ -33,6 +34,7 @@ The public tool schema has no option `value` property. Supply a label; the tool 
 
 ## Input rules
 
+- `context` is required in the public schema and must be non-blank after trimming; a missing or blank `context` that reaches tool execution returns an `invalid_input` issue at path `context` together with any question issues, and no form opens
 - at least one question is required
 - every question must have non-empty trimmed `id` and `prompt`
 - every question must have at least one option
@@ -57,7 +59,7 @@ The public tool schema has no option `value` property. Supply a label; the tool 
   details: {
     title?: string;
     cancelled: boolean;
-    cancelReason?: "user" | "aborted" | "ui_unavailable" | "invalid_input" | "missing_context";
+    cancelReason?: "user" | "aborted" | "ui_unavailable" | "invalid_input";
     error?: {
       kind: "invalid_input";
       issues: Array<{
@@ -177,7 +179,7 @@ While the TUI or RPC ask flow is open, `ask_user` sends a tool update after each
 
 ## Output rules
 
-- `cancelled: true` means the user dismissed the flow, the run was aborted, UI was unavailable, or the payload was invalid before UI opened; every cancelled result includes `cancelReason`: `user` for cancel or dismiss (including command flows), `aborted` for a tool run interrupted by its abort signal, `ui_unavailable` for non-interactive modes, `invalid_input` for payload validation failures, or `missing_context` when an interactive ask was refused because no assistant message since the user's last input has text; pi-ask opens that form after the model's explanation turn (see Execution and lifecycle). An aborted tool result says exactly: `The ask_user form was closed because the run was aborted. No answers were collected.` It contains no answers.
+- `cancelled: true` means the user dismissed the flow, the run was aborted, UI was unavailable, or the payload was invalid before UI opened; every cancelled result includes `cancelReason`: `user` for cancel or dismiss (including command flows), `aborted` for a tool run interrupted by its abort signal, `ui_unavailable` for non-interactive modes, or `invalid_input` for payload validation failures. An aborted tool result says exactly: `The ask_user form was closed because the run was aborted. No answers were collected.` It contains no answers.
 - semantically invalid payloads that reach tool execution return `error.kind === "invalid_input"` with structured `issues` and a transcript-friendly `Invalid ask_user payload:` message; the result is marked `isError: true`, so the model sees a failed tool call, and its rendered status is `Invalid tool payload`
 - payloads missing schema-required fields fail Pi's schema validation before tool execution and use Pi's standard tool-error result without structured `details`
 - `mode: "submit"` is normal completion; `mode: "elaborate"` means the user asked the agent to continue with follow-up clarification based on notes
@@ -206,7 +208,7 @@ While the TUI or RPC ask flow is open, `ask_user` sends a tool update after each
 - option-targeted elaboration items include the specific noted option plus whether it is currently selected
 - question-targeted elaboration items include whether the question already has a committed answer
 - `elaboration.instruction` tells the agent to answer the clarification directly first, then re-ask only the affected questions if a choice is still needed; elaborate result `content` also carries the short answer-first instruction so the model receives it
-- when a submitted answer or note asks a question or asks for an explanation, agents answer it in message text first; when the user asks only for an explanation or asks for no form, agents do not call `ask_user`
+- when a submitted answer or note asks a question or asks for an explanation, agents answer it in `context` when they ask again, or in message text when they do not; when the user asks only for an explanation or asks for no form, agents do not call `ask_user`
 - when a choice is still needed after that, agents should use another structured `ask_user` call, not plain-text choices
 - when prior answers narrow the branch, agents should bundle the next 2-3 related unresolved decisions into one follow-up when possible; ask one at a time only when the next question materially depends on the previous answer
 - `elaboration` is only present when `mode === "elaborate"`
@@ -234,7 +236,7 @@ While the TUI or RPC ask flow is open, `ask_user` sends a tool update after each
 - review tab shows a one-row action bar (`1 Submit │ 2 Elaborate │ 3 Cancel`, the focused action highlighted) above numbered question blocks; up/down move between actions, and the footer shows `↑↓ action`; each block shows its question label, question note, `→ answer` lines in the success color with option notes under their answers, or `unanswered` in the warning color; terminals too narrow for the bar show one action per row; on short terminals the answers scroll under the fixed bar and show how many questions are above and below, with the same narrow-terminal `↑ N more` / `↓ N more` hint fallback
 - on the review tab, `Submit` and `Cancel` preview notes only for answered questions
 - on the review tab, `Elaborate` preview expands to all question notes and all option notes, including notes on unselected options
-- transcript-friendly call and result rendering
+- transcript-friendly call and result rendering; the call's `context` appears in the chat as a message above the `ask_user` row (see Execution and lifecycle)
 - `/answer` command to convert the latest completed assistant message into an `AskParams` form through a synthetic `ask_user` tool call and open the ask UI
 - `/answer` extraction may use an internal `freeform: true` option for open-ended questions with no explicit choices; these render as user-input-only questions with the label `Type your answer:`, no numbered option row, and no selection caret; this marker is not part of the public `ask_user` tool contract
 - `/answer:again` command to replay the latest `/answer`-extracted form on the current branch
@@ -299,7 +301,7 @@ While an interactive ask flow is open, pi-ask sets the `pi-ask` footer status to
 
 `ask_user` registers with `exposure: "model-only"`: pi declares it to the model, and codemode scripts and other tools cannot call it through `ctx.executeTool()`. It stays declared when `codemode.mode` is `"only"`.
 
-In TUI mode and in RPC mode with a UI, `ask_user` first checks what the user could read. It looks at the assistant messages since the user's last input (a user message, or an ask result that is not an error), up to and including the calling message. Refusals, invalid payloads and schema failures are error results: no form opened, so they are not user input. If none has a non-empty text block, the form does not open and no payload is saved: the result has `isError: true`, `cancelReason: "missing_context"`, and text that names the block types the model sent and tells the model to reply with the explanation as text and end its turn without a tool call. pi-ask keeps the refused form and opens it when the run settles (`agent_settled`), so the user reads the explanation first. It opens the form only when the run ended with the model's reply, so not after an abort or an error, and not when the user wrote since the refusal. The form's payload is saved when it opens, so `/ask:replay` can reopen it. The answer goes back with user-message semantics, as for `/ask:replay`, and remote lifecycle events use source `ask:deferred`. Each user input gets at most one refusal: the next text-less ask after the same input opens the form at once, and any form that opens through the tool drops the waiting one. Non-interactive modes skip the check.
+`ask_user` draws its own transcript rows (`renderShell: "self"`). The call row shows `context` as Markdown with the padding of an assistant message, then the `ask_user N question(s) (labels)` header row. While the call streams or its form is open, the header row and any answers reported so far have no background. A finished call draws the box of pi's default tool shell around the header and result rows, with the success or error background. pi's HTML exporter renders every call as pending and puts each call inside its own status box, so an export shows `context` and the header row inside that box. While the call streams, `context` appears as it arrives. In TUI mode the form opens below the transcript after the call ends, so `context` stays visible above it, and the answer returns as the tool result in the same turn. A call without `context` shows only the header row.
 
 `ask_user` requests sequential execution. When one assistant message calls it alongside other tools, pi runs the entire batch one call at a time. A pre-aborted call does not open the UI; aborting an open flow closes it and emits the remote `completed` event. On session shutdown, open flows close. An interrupted recovered ask has no dismissal marker or tool result, so startup can reopen it again.
 

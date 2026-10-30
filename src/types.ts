@@ -19,6 +19,8 @@ export interface AskQuestionInput {
 }
 
 export interface AskParams {
+	/** The explanation the chat shows above the form; required by the tool schema. */
+	context?: string;
 	questions: AskQuestionInput[];
 	title?: string;
 }
@@ -124,12 +126,7 @@ export interface AskContinuationPayload {
 export interface AskResult {
 	answers: Record<string, AskResultAnswer>;
 	cancelled: boolean;
-	cancelReason?:
-		| "user"
-		| "aborted"
-		| "ui_unavailable"
-		| "invalid_input"
-		| "missing_context";
+	cancelReason?: "user" | "aborted" | "ui_unavailable" | "invalid_input";
 	continuation?: AskContinuationPayload;
 	elaboration?: AskElaborationPayload;
 	error?: AskValidationError;

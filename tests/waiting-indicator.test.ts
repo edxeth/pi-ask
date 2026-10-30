@@ -3,13 +3,13 @@ import test from "node:test";
 import { registerAskTool } from "../src/ask-tool.ts";
 import type { AskParams } from "../src/types.ts";
 import { runAskFlow } from "../src/ui/controller.ts";
-import { sessionWithContext } from "./fixtures/ask-context.ts";
 
 const HAS_UI = "hasUI";
 const FAILED_RE = /failed/;
 const RECOVERY_FAILED_RE = /recovery screen failed/;
 
 const params: AskParams = {
+	context: "Both answers change the plan.",
 	questions: [
 		{ id: "a", prompt: "First?", options: [{ value: "yes", label: "Yes" }] },
 		{ id: "b", prompt: "Second?", options: [{ value: "no", label: "No" }] },
@@ -75,13 +75,7 @@ function setup(mode: "tui" | "rpc") {
 			return [];
 		},
 	} as never);
-	const ctx = {
-		mode,
-		[HAS_UI]: true,
-		cwd: process.cwd(),
-		sessionManager: sessionWithContext("waiting"),
-		ui,
-	} as never;
+	const ctx = { mode, [HAS_UI]: true, cwd: process.cwd(), ui } as never;
 	const abort = new AbortController();
 	return {
 		events,

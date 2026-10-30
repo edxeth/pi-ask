@@ -11,17 +11,12 @@ await getAskConfigStore().ensureLoaded();
 getAskConfigStore().setConfig({ ...DEFAULT_ASK_CONFIG, notifications: { ...DEFAULT_ASK_CONFIG.notifications, enabled: false } });
 let tool;
 registerAskTool({ registerTool(value) { tool = value; }, appendEntry() {}, getCommands() { return []; } });
-const params = { questions: [{ id: "goal", label: "Goal", prompt: "Choose a goal", options: [{ value: "speed", label: "Speed" }] }] };
+const params = { context: "Speed matters most for this release.", questions: [{ id: "goal", label: "Goal", prompt: "Choose a goal", options: [{ value: "speed", label: "Speed" }] }] };
 const theme = { fg(_color, text) { return text; }, bg(_color, text) { return text; } };
 async function interactive(keys) {
   let component;
   const pending = tool.execute("call", params, undefined, () => {}, {
-    cwd: process.cwd(), mode: "tui",
-    sessionManager: { getBranch: () => [
-      { type: "message", id: "u", message: { role: "user", content: [{ type: "text", text: "Ask me." }] } },
-      { type: "message", id: "a", message: { role: "assistant", content: [{ type: "text", text: "Here is the context." }, { type: "toolCall", id: "call", name: "ask_user", arguments: {} }] } },
-    ] },
-    ui: {
+    cwd: process.cwd(), mode: "tui", ui: {
       setWorkingVisible() {},
       custom(callback) {
         return new Promise(resolve => {
@@ -39,13 +34,13 @@ const cases = {
   elaborated: await interactive(["1", "\\x1b[B", "\\r"]),
   cancelled: await interactive(["\\x1b"]),
   cancelledElaborate: await interactive(["1", "\\x1b[B", "\\x1b", "\\x1b"]),
-  invalid: await tool.execute("invalid", { questions: [] }, undefined, () => {}, { mode: "print" }),
+  invalid: await tool.execute("invalid", { context: params.context, questions: [] }, undefined, () => {}, { mode: "print" }),
   unavailable: await tool.execute("print", params, undefined, () => {}, { mode: "print" }),
   aborted: await tool.execute("abort", params, AbortSignal.abort(), () => {}, { mode: "tui" }),
 };
 console.log(JSON.stringify(Object.fromEntries(Object.entries(cases).map(([name, response]) => [name, {
   content: response.content[0].text,
-  rendered: tool.renderResult(response, undefined, theme).text,
+  rendered: tool.renderResult(response, { expanded: false, isPartial: false }, theme, { isPartial: false, isError: response.isError === true }).render(80).join("\\n"),
   mode: response.details.mode,
   cancelled: response.details.cancelled,
 }]))));

@@ -10,7 +10,6 @@ import {
 	hasActiveConfigMessage,
 	matchesConfigPrompt,
 } from "./config-trigger.ts";
-import { DeferredAsks, registerDeferredAskOpening } from "./deferred-ask.ts";
 import { registerAskEntryRenderers } from "./entry-renderers.ts";
 import { PI_ASK_CONFIG_PROMPT } from "./prompt-text.ts";
 import { registerRecoveryContext } from "./recovery-context.ts";
@@ -41,9 +40,7 @@ export default async function askExtension(pi: ExtensionAPI) {
 	// Unresolved ask_user calls whose pi-ai placeholder result a request in this process
 	// already sent. Recovery records this on its dismissal marker.
 	const placeholderSentIds = new Set<string>();
-	const deferredAsks = new DeferredAsks();
-	registerAskTool(pi, remoteAsk, shutdown.signal, deferredAsks);
-	registerDeferredAskOpening(pi, deferredAsks, remoteAsk, shutdown.signal);
+	registerAskTool(pi, remoteAsk, shutdown.signal);
 	registerAskSettingsCommand(pi);
 	registerAnswerCommands(pi, remoteAsk);
 	registerPendingAskResume(pi, remoteAsk, placeholderSentIds, shutdown.signal);
