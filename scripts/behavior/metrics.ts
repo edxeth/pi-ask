@@ -226,9 +226,22 @@ interface AskObservations {
 	textAfterInput: number[];
 }
 
+/** The questions as the form shows them: an omitted or blank label becomes Q1, Q2, … */
 function questionsOf(args: unknown): AskObservation["questions"] {
 	const questions = (args as { questions?: unknown } | null)?.questions;
-	return Array.isArray(questions) ? questions : [];
+	if (!Array.isArray(questions)) {
+		return [];
+	}
+	return questions.map(
+		(question: { label?: unknown; prompt?: unknown }, index) => ({
+			label:
+				typeof question?.label === "string" && question.label.trim()
+					? question.label
+					: `Q${index + 1}`,
+			prompt:
+				typeof question?.prompt === "string" ? question.prompt : undefined,
+		})
+	);
 }
 
 function words(text: string): string[] {
@@ -260,8 +273,9 @@ function isRepeated(
 	if (heading && text.split(PARAGRAPH).some((part) => heading.test(part))) {
 		return true;
 	}
+	// A prompt under three words has no trigrams; only its number can show a repeat.
 	const grams = trigrams(words(question.prompt ?? ""));
-	if (grams.size < 2) {
+	if (grams.size === 0) {
 		return false;
 	}
 	const textGrams = trigrams(words(text));

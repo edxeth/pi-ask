@@ -423,6 +423,37 @@ test("a question written in the text before its form counts as repeated", () => 
 	assert.equal(reworded.repeatedQuestions, 1);
 });
 
+test("a question without its own label is repeated under the number the form shows", () => {
+	for (const label of [undefined, "  "]) {
+		const metrics = askContextMetrics([
+			prompt,
+			assistant("❓ **Q1** - Pick a backend: local files or a database?", [
+				{
+					id: "a1",
+					args: {
+						questions: [
+							{ label, prompt: "Should we keep all the records in SQLite?" },
+						],
+					},
+				},
+			]),
+			askResult("a1"),
+		]);
+		assert.equal(metrics.repeatedQuestions, 1, String(label));
+	}
+});
+
+test("an exact repeat of a three-word prompt counts", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("Enable offline sync?", [
+			{ id: "a1", args: { questions: [{ prompt: "Enable offline sync?" }] } },
+		]),
+		askResult("a1"),
+	]);
+	assert.equal(metrics.repeatedQuestions, 1);
+});
+
 test("context in the text, and a passing mention of a question number, do not repeat the question", () => {
 	const metrics = askContextMetrics([
 		prompt,
