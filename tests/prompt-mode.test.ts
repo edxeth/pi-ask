@@ -60,7 +60,7 @@ function registeredText(mode: string | undefined) {
 const compactGuideline =
 	"Use `ask_user` before preference-sensitive decisions (scope, tone, UX, naming, architecture, docs, implementation direction), or when several valid directions exist; ask 1-3 concise questions instead of choosing one path yourself.";
 const contextGuideline =
-	"Before every `ask_user` call, write the context as message text in the same turn: what you found, what the decision is and why it matters, your recommendation with its reason, any steps the user must take, and the answer to anything the user asked. Context that exists only in your thinking, tool arguments, tool output, or files does not count, and the form does not replace this text.";
+	"Put each question and its options only in the `ask_user` form, and mark your recommended option there. Put everything that explains only in your message text before the call: what you found, why each decision matters, why you recommend an option, hints, and the answer to anything the user asked. Never restate a question or list its options in the text, even when a skill or prompt gives a text format for questions. Context that exists only in your thinking, tool output, or files does not count.";
 const followUpGuideline =
 	"If a submitted answer or note asks a question or asks for an explanation, answer it in message text first. If the user asks only for an explanation, or asks you not to use the form, answer in message text and do not call `ask_user`. If a choice is still needed, use another structured `ask_user` call, not plain-text choices in chat. When prior answers narrow the branch, bundle the next 2-3 related unresolved decisions into one follow-up when possible; ask one at a time only when the next question materially depends on the previous answer.";
 const questionsDescription =
@@ -70,7 +70,7 @@ const labelDescription =
 const derivedValuePattern = /Offline only \[offline-only\]/;
 const blankValuePattern = /option 1: value is required/;
 const recommendation =
-	"Optional. Set true on an option you recommend for a grounded reason; state the reason in `description`.";
+	"Optional. Set true on an option you recommend for a grounded reason; give the reason in your message text.";
 
 const compact = registeredText("compact");
 
@@ -254,9 +254,14 @@ test("rule inventory has a single observed home for each rule", () => {
 			"guideline.3",
 			"ask one at a time only when the next question materially depends",
 		],
-		["G12", "guideline.2", "write the context as message text"],
+		["G12", "guideline.2", "only in the `ask_user` form"],
 		["G13", "guideline.3", "answer it in message text first"],
 		["G14", "guideline.3", "do not call `ask_user`"],
+		[
+			"G15",
+			"guideline.2",
+			"Never restate a question or list its options in the text",
+		],
 		["D1", "parameters.questions[].prompt", "Required direct question"],
 		[
 			"D2",
@@ -285,6 +290,7 @@ test("rule inventory has a single observed home for each rule", () => {
 			"G12",
 			"G13",
 			"G14",
+			"G15",
 			"D1",
 			"D2",
 			"D3",

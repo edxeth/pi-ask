@@ -110,7 +110,7 @@ test("ask option schema and tool guidance support grounded recommendations", () 
 				.properties.recommended.description,
 		].some(
 			(guidance) =>
-				guidance.includes("grounded") && guidance.includes("description")
+				guidance.includes("grounded") && guidance.includes("message text")
 		)
 	);
 });

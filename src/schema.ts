@@ -11,7 +11,7 @@ export const AskOptionSchema = Type.Object({
 	}),
 	description: Type.Optional(
 		Type.String({
-			description: "Optional one-line explanation to help the user choose",
+			description: "Optional short phrase that says what this option means",
 		})
 	),
 	preview: Type.Optional(
