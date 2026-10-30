@@ -83,7 +83,8 @@ if (
 }
 // Declared before the batch loop: records built inside it read this constant.
 const configDoc = /docs\/configuration\.md/;
-const planMarker = /(?:^|\n)PLAN:/i;
+// Markdown may wrap the marker, as in "## PLAN:" or "**PLAN:".
+const planMarker = /(?:^|\n)\W{0,6}PLAN:/i;
 // pi-ask may open a refused form after the run settles and start a new run with the answer.
 const settleGraceMs = 3000;
 await mkdir(outputDir, { recursive: true });
@@ -437,6 +438,13 @@ async function readBridgeTrace(tracePath) {
 	return trace;
 }
 
+/** Forms the user saw: every form the bridge answered, including forms pi-ask opened after a refusal. */
+function formsFromTrace(trace) {
+	return trace
+		.filter((event) => event.kind === "started")
+		.map((event) => ({ args: { questions: event.event?.questions ?? [] } }));
+}
+
 function askValidationErrors(events, refused) {
 	return events
 		.filter(
@@ -523,7 +531,8 @@ async function buildRecord({
 	if (asks.length > 0 && !trace.some((event) => event.kind === "started")) {
 		throw new Error("Bridge failure: ask_user ran without a started event");
 	}
-	const questions = asks.flatMap((c) => c.args?.questions ?? []);
+	const forms = formsFromTrace(trace);
+	const questions = forms.flatMap((form) => form.args.questions);
 	const transcript = transcriptFromEvents(events);
 	return {
 		model,
@@ -533,7 +542,7 @@ async function buildRecord({
 		case: behavior.id,
 		run,
 		prompt: behavior.prompt,
-		asked: asks.length > 0,
+		asked: forms.length > 0,
 		questionCount: questions.length,
 		questionTypes: questions.map((q) => q.type ?? "single"),
 		recommendations: questions.flatMap((q) =>
@@ -546,7 +555,7 @@ async function buildRecord({
 				}))
 		),
 		validationErrors: askValidationErrors(events, refused),
-		followUp: followUpKind(asks, behavior, text),
+		followUp: followUpKind(forms, behavior, text),
 		configurationDocRead: calls.some(
 			(c) => c.name === "read" && configDoc.test(c.args?.path ?? "")
 		),
@@ -563,7 +572,7 @@ async function buildRecord({
 		tokenUsage: tokenUsage(events),
 		costTotal: costTotal(events),
 		...(behavior.id === "interview"
-			? { interview: buildInterviewMetrics(asks, events, startedAt) }
+			? { interview: buildInterviewMetrics(forms, events, startedAt) }
 			: {}),
 	};
 }
