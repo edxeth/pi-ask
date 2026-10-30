@@ -71,6 +71,237 @@ export function tokenUsage(events: readonly UsageEvent[]) {
 	return { requestCount, firstRequest, total };
 }
 
+interface ContentPart {
+	arguments?: unknown;
+	id?: string;
+	name?: string;
+	text?: string;
+	type: string;
+}
+
+interface TranscriptEvent {
+	message?: {
+		content?: string | readonly ContentPart[];
+		details?: { cancelReason?: string };
+		role: string;
+		toolCallId?: string;
+		toolName?: string;
+		usage?: { cost?: { total?: number } };
+	};
+	type: string;
+}
+
+/** One finalized message, reduced to what the user saw and what the model sent. */
+export interface TranscriptEntry {
+	blocks?: string[];
+	cancelReason?: string;
+	role: "assistant" | "toolResult" | "user";
+	text: string;
+	toolCallId?: string;
+	toolCalls?: Array<{ args: unknown; id?: string; name?: string }>;
+	toolName?: string;
+}
+
+function contentParts(
+	content: string | readonly ContentPart[] | undefined
+): readonly ContentPart[] {
+	return typeof content === "string"
+		? [{ type: "text", text: content }]
+		: (content ?? []);
+}
+
+function toTranscriptEntry(
+	message: NonNullable<TranscriptEvent["message"]>
+): TranscriptEntry | undefined {
+	const parts = contentParts(message.content);
+	const text = parts
+		.filter((part) => part.type === "text")
+		.map((part) => part.text ?? "")
+		.join("\n");
+	if (message.role === "assistant") {
+		return {
+			role: "assistant",
+			text,
+			blocks: parts.map((part) => part.type),
+			toolCalls: parts
+				.filter((part) => part.type === "toolCall")
+				.map((part) => ({
+					id: part.id,
+					name: part.name,
+					args: part.arguments,
+				})),
+		};
+	}
+	if (message.role === "toolResult") {
+		return {
+			role: "toolResult",
+			text,
+			toolName: message.toolName,
+			toolCallId: message.toolCallId,
+			cancelReason: message.details?.cancelReason,
+		};
+	}
+	return message.role === "user" ? { role: "user", text } : undefined;
+}
+
+/** Finalized messages in order; streaming updates are not separate messages. */
+export function transcriptFromEvents(
+	events: readonly TranscriptEvent[]
+): TranscriptEntry[] {
+	return events.flatMap((event) => {
+		if (event.type !== "message_end" || !event.message) {
+			return [];
+		}
+		const entry = toTranscriptEntry(event.message);
+		return entry ? [entry] : [];
+	});
+}
+
+/** Sum of pi's per-request cost; requests without cost data add nothing. */
+export function costTotal(events: readonly TranscriptEvent[]): number {
+	return events.reduce(
+		(sum, event) =>
+			event.type === "message_end" && event.message?.role === "assistant"
+				? sum + (event.message.usage?.cost?.total ?? 0)
+				: sum,
+		0
+	);
+}
+
+const REFUSED = "missing_context";
+// The user never saw a form for these results, so they do not start a new user input.
+const NOT_USER_INPUT = new Set([REFUSED, "invalid_input"]);
+
+function isUserInput(entry: TranscriptEntry): boolean {
+	return (
+		entry.role === "user" ||
+		(entry.role === "toolResult" &&
+			entry.toolName === "ask_user" &&
+			!NOT_USER_INPUT.has(entry.cancelReason ?? ""))
+	);
+}
+
+interface AskObservation {
+	factInForm?: boolean;
+	factInText?: boolean;
+	/** User inputs seen before this call; the prompt is the first input. */
+	inputIndex: number;
+	refused: boolean;
+	/** Assistant message text since the last user input, including the calling message. */
+	textChars: number;
+}
+
+interface AskObservations {
+	asks: AskObservation[];
+	/** Assistant text characters written after each user input, by input index. */
+	textAfterInput: number[];
+}
+
+interface AskWindow {
+	fact: RegExp | undefined;
+	inputIndex: number;
+	refusedIds: ReadonlySet<string | undefined>;
+	text: string;
+}
+
+function observeCall(
+	call: NonNullable<TranscriptEntry["toolCalls"]>[number],
+	window: AskWindow
+): AskObservation {
+	return {
+		inputIndex: window.inputIndex,
+		refused: window.refusedIds.has(call.id),
+		textChars: window.text.trim().length,
+		...(window.fact
+			? {
+					factInText: window.fact.test(window.text),
+					factInForm: window.fact.test(JSON.stringify(call.args ?? null)),
+				}
+			: {}),
+	};
+}
+
+function observeAsks(
+	transcript: readonly TranscriptEntry[],
+	factPattern?: string
+): AskObservations {
+	const fact = factPattern ? new RegExp(factPattern, "i") : undefined;
+	const refusedIds = new Set(
+		transcript
+			.filter((entry) => entry.cancelReason === REFUSED)
+			.map((entry) => entry.toolCallId)
+	);
+	const asks: AskObservation[] = [];
+	const textAfterInput: number[] = [0];
+	let windowText = "";
+	for (const entry of transcript) {
+		if (isUserInput(entry)) {
+			textAfterInput.push(0);
+			windowText = "";
+			continue;
+		}
+		if (entry.role !== "assistant") {
+			continue;
+		}
+		const inputIndex = textAfterInput.length - 1;
+		windowText += `${entry.text}\n`;
+		textAfterInput[inputIndex] += entry.text.trim().length;
+		const window = { fact, inputIndex, refusedIds, text: windowText };
+		asks.push(
+			...(entry.toolCalls ?? [])
+				.filter((call) => call.name === "ask_user")
+				.map((call) => observeCall(call, window))
+		);
+	}
+	return { asks, textAfterInput };
+}
+
+function followUpAfterFirstAnswer(observed: AskObservations) {
+	const firstOpened = observed.asks.find((ask) => !ask.refused);
+	if (!firstOpened) {
+		return null;
+	}
+	const answerInput = firstOpened.inputIndex + 1;
+	const later = observed.asks.filter((ask) => ask.inputIndex === answerInput);
+	const laterOpened = later.filter((ask) => !ask.refused);
+	return {
+		textChars: observed.textAfterInput[answerInput] ?? 0,
+		askCalls: later.length,
+		openedAsks: laterOpened.length,
+		firstCallHadText: later[0] ? later[0].textChars > 0 : null,
+		firstOpenedHadText: laterOpened[0] ? laterOpened[0].textChars > 0 : null,
+	};
+}
+
+/**
+ * Whether the user could read an explanation before each ask_user form.
+ * Text counts when any assistant message since the last user input has a text block.
+ */
+export function askContextMetrics(
+	transcript: readonly TranscriptEntry[],
+	factPattern?: string
+) {
+	const observed = observeAsks(transcript, factPattern);
+	const { asks } = observed;
+	const opened = asks.filter((ask) => !ask.refused);
+	const first = asks[0];
+	return {
+		askCalls: asks.length,
+		openedAsks: opened.length,
+		refusedAsks: asks.length - opened.length,
+		asksWithoutText: asks.filter((ask) => ask.textChars === 0).length,
+		openedWithoutText: opened.filter((ask) => ask.textChars === 0).length,
+		firstAsk: first
+			? {
+					textChars: first.textChars,
+					factInText: first.factInText,
+					factInForm: first.factInForm,
+				}
+			: null,
+		afterFirstAnswer: followUpAfterFirstAnswer(observed),
+	};
+}
+
 interface AskCall {
 	args?: { questions?: readonly unknown[] };
 }

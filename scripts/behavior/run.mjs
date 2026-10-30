@@ -14,7 +14,13 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cases } from "./cases.mjs";
-import { interviewMetrics, tokenUsage } from "./metrics.ts";
+import {
+	askContextMetrics,
+	costTotal,
+	interviewMetrics,
+	tokenUsage,
+	transcriptFromEvents,
+} from "./metrics.ts";
 import { executePrint } from "./print.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -40,6 +46,19 @@ function option(flag, fallback) {
 const models = option("--models", [base, ...reportOnly].join(",")).split(",");
 const modes = option("--modes", "upstream,fork").split(",");
 const selected = option("--case", "all");
+const selectedIds = selected === "all" ? [] : selected.split(",");
+// A model may carry pi's thinking suffix, for example anthropic/claude-opus-5-5:high.
+const thinkingLevels = new Set([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]);
+// PI_ASK_BEHAVIOR_VARIANT labels records when several worktrees run the same matrix.
+const variant = process.env.PI_ASK_BEHAVIOR_VARIANT;
 const repeats = option("--repeats", "default");
 const outputDir =
 	process.env.PI_ASK_BEHAVIOR_DIR ??
@@ -52,7 +71,7 @@ if (
 	timeoutMs <= 0 ||
 	(repeats !== "default" &&
 		(!Number.isSafeInteger(Number(repeats)) || Number(repeats) <= 0)) ||
-	(selected !== "all" && !cases.some((c) => c.id === selected)) ||
+	selectedIds.some((id) => !cases.some((c) => c.id === id)) ||
 	args.some(
 		(arg, i) =>
 			i % 2 === 0 &&
@@ -76,7 +95,7 @@ const batch = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
 batchRuns: for (const model of models) {
 	for (const mode of modes) {
 		for (const behavior of cases.filter(
-			(c) => selected === "all" || c.id === selected
+			(c) => selected === "all" || selectedIds.includes(c.id)
 		)) {
 			const count =
 				repeats === "default" ? defaultRuns(model) : Number(repeats);
@@ -169,13 +188,37 @@ function defaultRuns(model) {
 	return model === base ? 3 : 1;
 }
 
+function parseModel(model) {
+	const [provider, ...idParts] = model.split("/");
+	const id = idParts.join("/");
+	const colon = id.lastIndexOf(":");
+	const suffix = colon > 0 ? id.slice(colon + 1) : "";
+	return thinkingLevels.has(suffix)
+		? { provider, modelId: id.slice(0, colon), thinking: suffix }
+		: { provider, modelId: id, thinking: undefined };
+}
+
+/** Setup order: set_model, then set_thinking_level when requested, then the prompt. */
+function setupCommands(prompt, thinking) {
+	const promptCommand = { id: "prompt", type: "prompt", message: prompt };
+	return new Map([
+		[
+			"set_model",
+			thinking
+				? { id: "thinking", type: "set_thinking_level", level: thinking }
+				: promptCommand,
+		],
+		["set_thinking_level", promptCommand],
+	]);
+}
+
 async function execute({ model, mode, behavior, run, timeoutMs }) {
 	const scratch = await mkdtemp(join(tmpdir(), "pi-ask-behavior-"));
 	const tracePath = join(scratch, "bridge.jsonl");
-	const [provider, ...idParts] = model.split("/");
-	const modelId = idParts.join("/");
+	const { provider, modelId, thinking } = parseModel(model);
 	const startedAt = Date.now();
 	const child = spawnRpc(model, mode, behavior.id, tracePath);
+	const nextSetupCommand = setupCommands(behavior.prompt, thinking);
 	let stderr = "";
 	const events = [];
 	let buffer = "";
@@ -202,14 +245,12 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 					const event = JSON.parse(line);
 					event.receivedAt = Date.now();
 					events.push(event);
-					if (
-						event.type === "response" &&
-						event.command === "set_model" &&
-						event.success
-					) {
-						child.stdin.write(
-							`${JSON.stringify({ id: "prompt", type: "prompt", message: behavior.prompt })}\n`
-						);
+					const next =
+						event.type === "response" && event.success
+							? nextSetupCommand.get(event.command)
+							: undefined;
+					if (next) {
+						child.stdin.write(`${JSON.stringify(next)}\n`);
 					}
 					if (event.type === "agent_end") {
 						finished = true;
@@ -278,6 +319,7 @@ function checkRpcStatus(events, status, finished, buffer, stderr) {
 }
 
 function spawnRpc(model, mode, caseId, tracePath) {
+	const { provider, modelId, thinking } = parseModel(model);
 	const env = { ...process.env };
 	env.PI_ASK_BEHAVIOR_TRACE = tracePath;
 	if (upstreamEntry) {
@@ -304,7 +346,8 @@ function spawnRpc(model, mode, caseId, tracePath) {
 			"-e",
 			join(root, "scripts/behavior/bridge.ts"),
 			"--model",
-			model,
+			`${provider}/${modelId}`,
+			...(thinking ? ["--thinking", thinking] : []),
 		],
 		{
 			cwd: root,
@@ -372,6 +415,31 @@ async function readBridgeTrace(tracePath) {
 	return trace;
 }
 
+function askValidationErrors(events, refused) {
+	return events
+		.filter(
+			(e) =>
+				e.type === "tool_execution_end" &&
+				e.toolName === "ask_user" &&
+				!refused.has(e.toolCallId) &&
+				(e.isError || e.result?.details?.cancelReason === "invalid_input")
+		)
+		.map((e) => e.result);
+}
+
+function refusedAskIds(events) {
+	return new Set(
+		events
+			.filter(
+				(e) =>
+					e.type === "tool_execution_end" &&
+					e.toolName === "ask_user" &&
+					e.result?.details?.cancelReason === "missing_context"
+			)
+			.map((e) => e.toolCallId)
+	);
+}
+
 async function buildRecord({
 	events,
 	tracePath,
@@ -399,7 +467,7 @@ async function buildRecord({
 	const trace = await readBridgeTrace(tracePath);
 	const calls = events
 		.filter((e) => e.type === "tool_execution_start")
-		.map((e) => ({ name: e.toolName, args: e.args }));
+		.map((e) => ({ id: e.toolCallId, name: e.toolName, args: e.args }));
 	const text = events
 		.filter((e) => e.type === "message_end" && e.message?.role === "assistant")
 		.flatMap(
@@ -409,14 +477,19 @@ async function buildRecord({
 					.map((p) => p.text) ?? []
 		)
 		.join("\n");
-	const asks = calls.filter((c) => c.name === "ask_user");
+	// A refused ask opens no form, so the bridge never sees it; count opened asks only.
+	const refused = refusedAskIds(events);
+	const asks = calls.filter((c) => c.name === "ask_user" && !refused.has(c.id));
 	if (asks.length > 0 && !trace.some((event) => event.kind === "started")) {
 		throw new Error("Bridge failure: ask_user ran without a started event");
 	}
 	const questions = asks.flatMap((c) => c.args?.questions ?? []);
+	const transcript = transcriptFromEvents(events);
 	return {
 		model,
 		mode,
+		variant: variant ?? mode,
+		thinkingLevel: parseModel(model).thinking ?? null,
 		case: behavior.id,
 		run,
 		prompt: behavior.prompt,
@@ -432,14 +505,7 @@ async function buildRecord({
 					reason: o.description ?? null,
 				}))
 		),
-		validationErrors: events
-			.filter(
-				(e) =>
-					e.type === "tool_execution_end" &&
-					e.toolName === "ask_user" &&
-					(e.isError || e.result?.details?.cancelReason === "invalid_input")
-			)
-			.map((e) => e.result),
+		validationErrors: askValidationErrors(events, refused),
 		followUp: followUpKind(asks, behavior, text),
 		configurationDocRead: calls.some(
 			(c) => c.name === "read" && configDoc.test(c.args?.path ?? "")
@@ -447,7 +513,10 @@ async function buildRecord({
 		toolCalls: calls,
 		assistantText: text,
 		bridgeTrace: trace,
+		askContext: askContextMetrics(transcript, behavior.factPattern),
+		transcript,
 		tokenUsage: tokenUsage(events),
+		costTotal: costTotal(events),
 		...(behavior.id === "interview"
 			? { interview: buildInterviewMetrics(asks, events, startedAt) }
 			: {}),
