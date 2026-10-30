@@ -27,14 +27,20 @@ const call = (id: string, name = "ask_user") => ({
 	name,
 	arguments: {},
 });
-const result = (toolCallId: string, toolName: string, cancelReason?: string) =>
+const result = (
+	toolCallId: string,
+	toolName: string,
+	cancelReason?: string,
+	isError = cancelReason === "missing_context" ||
+		cancelReason === "invalid_input"
+) =>
 	entry({
 		role: "toolResult",
 		toolCallId,
 		toolName,
 		content: [{ type: "text", text: "result" }],
 		details: cancelReason ? { cancelReason } : {},
-		isError: false,
+		isError,
 	});
 const MISSING_CALL_RE = /no assistant message with tool call missing/;
 
@@ -111,6 +117,36 @@ test("refused and invalid asks are not user input", () => {
 	);
 	assert.equal(context.hasText, true);
 	assert.equal(context.boundaryId, prompt.id);
+});
+
+test("a schema failure is an error result, so it is not user input", () => {
+	const prompt = user("Plan it");
+	const context = findAskContext(
+		[
+			prompt,
+			assistant(text("Context first."), call("a0")),
+			result("a0", "ask_user", undefined, true),
+			assistant(thinking, call("a1")),
+		],
+		"a1"
+	);
+	assert.equal(context.hasText, true);
+	assert.equal(context.boundaryId, prompt.id);
+});
+
+test("a cancelled form is user input, so the next ask needs new text", () => {
+	const cancelled = result("a0", "ask_user", "user");
+	const context = findAskContext(
+		[
+			user("Plan it"),
+			assistant(text("Context first."), call("a0")),
+			cancelled,
+			assistant(thinking, call("a1")),
+		],
+		"a1"
+	);
+	assert.equal(context.hasText, false);
+	assert.equal(context.boundaryId, cancelled.id);
 });
 
 test("two asks in one message share the message text", () => {

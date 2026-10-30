@@ -1,10 +1,5 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
-export const MISSING_CONTEXT = "missing_context";
-
-// The user saw no form for these results, so they do not start a new user input.
-const NOT_USER_INPUT = new Set<string>([MISSING_CONTEXT, "invalid_input"]);
-
 export interface AskContext {
 	/** Content block types of the assistant messages since that input, in first-seen order. */
 	blockTypes: string[];
@@ -32,11 +27,12 @@ function isUserInput(entry: SessionEntry): boolean {
 	if (message.role === "user") {
 		return true;
 	}
-	if (message.role !== "toolResult" || message.toolName !== "ask_user") {
-		return false;
-	}
-	const details = message.details as { cancelReason?: string } | undefined;
-	return !NOT_USER_INPUT.has(details?.cancelReason ?? "");
+	// An error result (a refusal, an invalid payload, a schema failure) opened no form.
+	return (
+		message.role === "toolResult" &&
+		message.toolName === "ask_user" &&
+		!message.isError
+	);
 }
 
 function assistantParts(entry: SessionEntry) {
@@ -59,7 +55,8 @@ function lastIndexWhere(
 
 /**
  * What the user could read before an ask_user call: the assistant messages since the last
- * user input (a user message or an answered ask), up to and including the calling message.
+ * user input (a user message, or an ask result that is not an error), up to and including
+ * the calling message.
  * Pi saves the calling message before it runs the tool, so it is on the branch.
  */
 export function findAskContext(
