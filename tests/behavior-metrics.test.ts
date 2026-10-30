@@ -384,6 +384,57 @@ test("a cancelled deferred form counts as opened but has no answer to anchor on"
 	assert.equal(metrics.afterFirstAnswer, null);
 });
 
+const storageQuestion = {
+	id: "a1",
+	args: {
+		questions: [
+			{
+				label: "Q1 Storage",
+				prompt: "Q1: Store the notes as plain files or in a database?",
+			},
+		],
+	},
+};
+
+test("a question written in the text before its form counts as repeated", () => {
+	const grilled = askContextMetrics([
+		prompt,
+		assistant(
+			"Two storage designs fit.\n\n❓ **Q1** - **Storage**: Files or a database?\n\n➡️ Files.",
+			[storageQuestion]
+		),
+		askResult("a1"),
+	]);
+	assert.deepEqual(
+		{
+			formQuestions: grilled.formQuestions,
+			repeatedQuestions: grilled.repeatedQuestions,
+		},
+		{ formQuestions: 1, repeatedQuestions: 1 }
+	);
+	const reworded = askContextMetrics([
+		prompt,
+		assistant(
+			"Should the app store the notes as plain files or in a database?",
+			[storageQuestion]
+		),
+		askResult("a1"),
+	]);
+	assert.equal(reworded.repeatedQuestions, 1);
+});
+
+test("context in the text, and a passing mention of a question number, do not repeat the question", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant(
+			"Files stay readable outside the app. A database makes search faster. Your Q1 note asked about backups: both designs back up the same way.",
+			[storageQuestion]
+		),
+		askResult("a1"),
+	]);
+	assert.equal(metrics.repeatedQuestions, 0);
+});
+
 test("an invalid payload is not user input, so it does not reset the window", () => {
 	const metrics = askContextMetrics([
 		prompt,

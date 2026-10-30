@@ -21,6 +21,8 @@ Three cases measure whether the user can read the context of an ask. `context` a
 
 `askContext.afterRefusal` counts refusals followed by an explanation that ends the turn, and refusals followed by another tool call. A refused ask counts as opened in `askContext` when the bridge trace shows its form (`ask:deferred` with the refused `toolCallId`). Its text is what the user read before the form opened, and its answer anchors `afterFirstAnswer` unless the form was cancelled. `deferredForms` counts forms that pi-ask opened after such an explanation turn (bridge events with source `ask:deferred`). An RPC run ends when pi settles and no new run starts within 3 seconds, so a form opened after the turn, and the run its answer starts, are part of the record.
 
+`grilling-round` gives a skill-style round format that writes each question and its recommended answer as text. `askContext.formQuestions` counts the questions of opened forms, and `askContext.repeatedQuestions` counts those that the text before their form already asked: a paragraph that starts with the question's number (`Q3`), or at least half of the prompt's word trigrams. Questions and options belong only in the form, so the expected count is zero.
+
 `--case` accepts a comma-separated list. A model may carry pi's thinking suffix (`anthropic/claude-opus-5-5:high`); RPC runs then set that thinking level before the prompt. `PI_ASK_BEHAVIOR_VARIANT` labels the records (default: the mode), for comparing several worktrees with the same matrix.
 
 No settings file is changed. RPC allows only `read` and `ask_user`; print uses the same allowlist. Both disable discovered skills, prompts, themes, and project context. The harness does not modify the project.

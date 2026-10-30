@@ -49,6 +49,12 @@ export const cases = [
 		factPattern: "deepseek",
 	},
 	{
+		// A skill-style round format that writes the questions as text, as the grilling skill does.
+		id: "grilling-round",
+		prompt:
+			'Grill me about the sync design of a local note-taking app. Work in rounds: ask every decision you can ask now in one round, number each question and give your recommended answer, then wait for my answers. Format a round like so:\n\n❓ **Q1** - **<question title>**: <question body, including multiple choices>\n\n➡️ <your recommended answer>\n\n---\n\n❓ **Q2** - **<question title>**: <question body, including multiple choices>\n\n➡️ <your recommended answer>\n\nWord each question so "yes" accepts your recommended answer. Stop after my answers to the first round.',
+	},
+	{
 		id: "typed-question",
 		prompt:
 			"Help me choose how a local note-taking app stores its notes. Ask me to choose between two storage designs before you plan.",

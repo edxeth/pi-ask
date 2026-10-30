@@ -210,8 +210,12 @@ interface AskObservation {
 	/** User inputs seen before this call; the prompt is the first input. */
 	inputIndex: number;
 	outcome: AskOutcome;
+	/** Questions of this call, as the form shows them. */
+	questions: Array<{ label?: string; prompt?: string }>;
 	/** Text the user read before the form opened; a deferred form opens after the explanation turn. */
 	textBeforeForm: number;
+	/** That text itself, to find questions that it repeats. */
+	textBeforeFormValue: string;
 	/** Assistant message text since the last user input, including the calling message. */
 	textChars: number;
 }
@@ -220,6 +224,54 @@ interface AskObservations {
 	asks: AskObservation[];
 	/** Assistant text characters written after each user input, by input index. */
 	textAfterInput: number[];
+}
+
+function questionsOf(args: unknown): AskObservation["questions"] {
+	const questions = (args as { questions?: unknown } | null)?.questions;
+	return Array.isArray(questions) ? questions : [];
+}
+
+function words(text: string): string[] {
+	return text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+}
+
+function trigrams(list: readonly string[]): Set<string> {
+	const grams = new Set<string>();
+	for (let index = 0; index + 2 < list.length; index++) {
+		grams.add(`${list[index]} ${list[index + 1]} ${list[index + 2]}`);
+	}
+	return grams;
+}
+
+const QUESTION_NUMBER = /\bQ(\d+)\b/;
+const PARAGRAPH = /\n\s*\n/;
+// A repeated question shares at least half of its word trigrams with the text.
+const REPEATED_SHARE = 0.5;
+
+/** The text asks the question again: a paragraph that starts with its number, or most of its wording. */
+function isRepeated(
+	question: AskObservation["questions"][number],
+	text: string
+): boolean {
+	const number = `${question.label ?? ""} ${question.prompt ?? ""}`.match(
+		QUESTION_NUMBER
+	);
+	const heading = number ? new RegExp(`^\\W*Q${number[1]}\\b`) : undefined;
+	if (heading && text.split(PARAGRAPH).some((part) => heading.test(part))) {
+		return true;
+	}
+	const grams = trigrams(words(question.prompt ?? ""));
+	if (grams.size < 2) {
+		return false;
+	}
+	const textGrams = trigrams(words(text));
+	let shared = 0;
+	for (const gram of grams) {
+		if (textGrams.has(gram)) {
+			shared++;
+		}
+	}
+	return shared / grams.size >= REPEATED_SHARE;
 }
 
 interface AskWindow {
@@ -239,11 +291,13 @@ function observeCall(
 	return {
 		inputIndex: window.inputIndex,
 		outcome,
+		questions: questionsOf(call.args),
 		answered:
 			outcome === "opened" ||
 			(outcome === "deferred" && Boolean(deferred?.answered)),
 		textChars: window.text.trim().length,
 		textBeforeForm: window.text.trim().length,
+		textBeforeFormValue: window.text,
 		...(window.fact
 			? {
 					factInText: window.fact.test(window.text),
@@ -268,10 +322,12 @@ function observeAsks(
 	);
 	const asks: AskObservation[] = [];
 	const textAfterInput: number[] = [0];
+	const windowAfterInput: string[] = [""];
 	let windowText = "";
 	for (const entry of transcript) {
 		if (isUserInput(entry)) {
 			textAfterInput.push(0);
+			windowAfterInput.push("");
 			windowText = "";
 			continue;
 		}
@@ -281,6 +337,7 @@ function observeAsks(
 		const inputIndex = textAfterInput.length - 1;
 		windowText += `${entry.text}\n`;
 		textAfterInput[inputIndex] += entry.text.trim().length;
+		windowAfterInput[inputIndex] = windowText;
 		const window = {
 			deferredForms,
 			fact,
@@ -298,6 +355,7 @@ function observeAsks(
 	for (const ask of asks) {
 		if (ask.outcome === "deferred") {
 			ask.textBeforeForm = textAfterInput[ask.inputIndex] ?? 0;
+			ask.textBeforeFormValue = windowAfterInput[ask.inputIndex] ?? "";
 		}
 	}
 	return { asks, textAfterInput };
@@ -369,6 +427,16 @@ export function askContextMetrics(
 		invalidAsks: asks.filter((ask) => ask.outcome === "invalid").length,
 		asksWithoutText: asks.filter((ask) => ask.textChars === 0).length,
 		openedWithoutText: opened.filter((ask) => ask.textBeforeForm === 0).length,
+		// Questions of opened forms, and those the text before the form already asked.
+		formQuestions: opened.reduce((sum, ask) => sum + ask.questions.length, 0),
+		repeatedQuestions: opened.reduce(
+			(sum, ask) =>
+				sum +
+				ask.questions.filter((question) =>
+					isRepeated(question, ask.textBeforeFormValue)
+				).length,
+			0
+		),
 		firstAsk: first
 			? {
 					textChars: first.textChars,
