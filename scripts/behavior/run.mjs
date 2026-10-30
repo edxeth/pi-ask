@@ -438,6 +438,39 @@ async function readBridgeTrace(tracePath) {
 	return trace;
 }
 
+/** Ask-context metrics, with the forms pi-ask opened after a refusal taken from the bridge trace. */
+function askContextFields(transcript, behavior, trace) {
+	const deferredForms = deferredFormsFromTrace(trace);
+	return {
+		askContext: askContextMetrics(
+			transcript,
+			behavior.factPattern,
+			deferredForms
+		),
+		// Forms that ask_user refused for missing context and opened after the explanation turn.
+		deferredForms: deferredForms.size,
+	};
+}
+
+/** Forms pi-ask opened after a refusal, keyed by the refused call; a cancelled form has no answer. */
+function deferredFormsFromTrace(trace) {
+	const forms = new Map();
+	for (const { kind, event } of trace) {
+		if (event?.source !== "ask:deferred" || !event.toolCallId) {
+			continue;
+		}
+		if (kind === "started") {
+			forms.set(event.toolCallId, { answered: false });
+		}
+		if (kind === "completed") {
+			forms.set(event.toolCallId, {
+				answered: event.result?.cancelled !== true,
+			});
+		}
+	}
+	return forms;
+}
+
 /** Forms the user saw: every form the bridge answered, including forms pi-ask opened after a refusal. */
 function formsFromTrace(trace) {
 	return trace
@@ -562,12 +595,7 @@ async function buildRecord({
 		toolCalls: calls,
 		assistantText: text,
 		bridgeTrace: trace,
-		askContext: askContextMetrics(transcript, behavior.factPattern),
-		// Forms that ask_user refused for missing context and opened after the explanation turn.
-		deferredForms: trace.filter(
-			(event) =>
-				event.kind === "started" && event.event?.source === "ask:deferred"
-		).length,
+		...askContextFields(transcript, behavior, trace),
 		transcript,
 		tokenUsage: tokenUsage(events),
 		costTotal: costTotal(events),

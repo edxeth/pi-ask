@@ -1,8 +1,10 @@
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { lastUserInputId } from "./ask-context-check.ts";
+import { appendAskPayload } from "./ask-payload-store.ts";
 import { successfulResponse } from "./ask-tool-helpers.ts";
 import { getAskConfigStore } from "./config/store.ts";
 import type { RemoteAskRuntime } from "./remote-ask.ts";
@@ -46,13 +48,30 @@ export class DeferredAsks {
 
 type DeferredPi = Pick<
 	ExtensionAPI,
-	"on" | "sendUserMessage" | "exec" | "getCommands" | "events"
+	| "on"
+	| "sendUserMessage"
+	| "exec"
+	| "getCommands"
+	| "events"
+	| "appendEntry"
+	| "setLabel"
 >;
+
+/** The run ended with the model's own reply, not with an abort, an error, or a cut tool loop. */
+function endedWithReply(branch: readonly SessionEntry[]): boolean {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			return entry.message.stopReason === "stop";
+		}
+	}
+	return false;
+}
 
 /**
  * When the run settles after a refusal, open the refused form: the model was told to end its
- * turn with the explanation, so the user has read it. An aborted run, or a user message since
- * the refusal, makes the waiting form stale.
+ * turn with the explanation, so the user has read it. The form stays closed when the run did
+ * not end with the model's reply (an abort, an error) or the user wrote since the refusal.
  */
 export function registerDeferredAskOpening(
 	pi: DeferredPi,
@@ -62,11 +81,16 @@ export function registerDeferredAskOpening(
 ): void {
 	pi.on("agent_settled", (event, ctx) => {
 		const ask = asks.take();
+		if (!ask) {
+			return;
+		}
+		const branch = ctx.sessionManager.getBranch();
+		// pi 1.4 and later also report an abort on the event; earlier versions do not.
 		const aborted = Boolean((event as { aborted?: unknown }).aborted);
 		if (
-			!ask ||
 			aborted ||
-			lastUserInputId(ctx.sessionManager.getBranch()) !== ask.boundaryId
+			!endedWithReply(branch) ||
+			lastUserInputId(branch) !== ask.boundaryId
 		) {
 			return;
 		}
@@ -88,6 +112,12 @@ async function openDeferredAsk(
 	remoteAsk: RemoteAskRuntime | undefined,
 	shutdownSignal: AbortSignal
 ): Promise<void> {
+	// Saved when the form opens, as for a tool call, so /ask:replay finds it.
+	appendAskPayload(pi, ctx, {
+		params: ask.params,
+		source: "tool",
+		sourceEntryId: ask.toolCallId,
+	});
 	const result = await collectDeferredAnswers(
 		pi,
 		ctx,

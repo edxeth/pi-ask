@@ -8,7 +8,7 @@ Live runs of `scripts/behavior/` on 2026-10-30 support both parts. They used the
 
 - Before this change, 77 of 97 forms opened without text. The text alone left 12 of 87, all of them Opus or Sonnet asks right after a tool result. A captured Opus message held the needed context in its second thinking block, followed by the tool call.
 - A refusal that asked for text and a new call fixed none of the 12, because the retry also follows a tool result, and it cost 17% more than the text alone. Both models wrote text in every reply that ended their turn.
-- With the explain-first refusal, 1 of 87 forms opened without text, at 16% higher total cost than the text alone. 10 of 11 refusals produced an explanation that ended the turn, and the form followed it.
+- With the explain-first refusal, 1 of 87 forms opened without text, at 15% higher total cost than the text alone. 10 of 11 refusals produced an explanation that ended the turn, and the form followed it.
 - With the final refusal text, Opus and Sonnet opened 0 of 24 forms without text, and all 12 explanations followed the refusal without mentioning it.
 - The base-model gate of ADR 0003 (deepseek-v4.1-flash against upstream 1.2.0, 3 runs of 11 cases) showed the same bundling, preview use and plan completion. Forms without text fell from 17 of 43 to 0 of 39.
 

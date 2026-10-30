@@ -184,21 +184,34 @@ function isUserInput(entry: TranscriptEntry): boolean {
 	);
 }
 
-type AskOutcome = "opened" | "refused" | "invalid";
+/** "deferred": refused, then opened by pi-ask after the explanation turn (from the bridge trace). */
+type AskOutcome = "opened" | "refused" | "invalid" | "deferred";
 
-function askOutcome(result: TranscriptEntry | undefined): AskOutcome {
+/** A form pi-ask opened after a refusal, keyed by the refused call; answered unless cancelled. */
+export interface DeferredForm {
+	answered: boolean;
+}
+
+function askOutcome(
+	result: TranscriptEntry | undefined,
+	deferred: DeferredForm | undefined
+): AskOutcome {
 	if (result?.cancelReason === REFUSED) {
-		return "refused";
+		return deferred ? "deferred" : "refused";
 	}
 	return result?.isError === true ? "invalid" : "opened";
 }
 
 interface AskObservation {
+	/** The form was answered, so the next user input is its answer. */
+	answered: boolean;
 	factInForm?: boolean;
 	factInText?: boolean;
 	/** User inputs seen before this call; the prompt is the first input. */
 	inputIndex: number;
 	outcome: AskOutcome;
+	/** Text the user read before the form opened; a deferred form opens after the explanation turn. */
+	textBeforeForm: number;
 	/** Assistant message text since the last user input, including the calling message. */
 	textChars: number;
 }
@@ -210,6 +223,7 @@ interface AskObservations {
 }
 
 interface AskWindow {
+	deferredForms: ReadonlyMap<string | undefined, DeferredForm>;
 	fact: RegExp | undefined;
 	inputIndex: number;
 	results: ReadonlyMap<string | undefined, TranscriptEntry>;
@@ -220,10 +234,16 @@ function observeCall(
 	call: NonNullable<TranscriptEntry["toolCalls"]>[number],
 	window: AskWindow
 ): AskObservation {
+	const deferred = window.deferredForms.get(call.id);
+	const outcome = askOutcome(window.results.get(call.id), deferred);
 	return {
 		inputIndex: window.inputIndex,
-		outcome: askOutcome(window.results.get(call.id)),
+		outcome,
+		answered:
+			outcome === "opened" ||
+			(outcome === "deferred" && Boolean(deferred?.answered)),
 		textChars: window.text.trim().length,
+		textBeforeForm: window.text.trim().length,
 		...(window.fact
 			? {
 					factInText: window.fact.test(window.text),
@@ -235,7 +255,8 @@ function observeCall(
 
 function observeAsks(
 	transcript: readonly TranscriptEntry[],
-	factPattern?: string
+	factPattern: string | undefined,
+	deferredForms: ReadonlyMap<string | undefined, DeferredForm>
 ): AskObservations {
 	const fact = factPattern ? new RegExp(factPattern, "i") : undefined;
 	const results = new Map(
@@ -260,20 +281,35 @@ function observeAsks(
 		const inputIndex = textAfterInput.length - 1;
 		windowText += `${entry.text}\n`;
 		textAfterInput[inputIndex] += entry.text.trim().length;
-		const window = { fact, inputIndex, results, text: windowText };
+		const window = {
+			deferredForms,
+			fact,
+			inputIndex,
+			results,
+			text: windowText,
+		};
 		asks.push(
 			...(entry.toolCalls ?? [])
 				.filter((call) => call.name === "ask_user")
 				.map((call) => observeCall(call, window))
 		);
 	}
+	// A deferred form opened after the explanation turn: the user read the whole window's text.
+	for (const ask of asks) {
+		if (ask.outcome === "deferred") {
+			ask.textBeforeForm = textAfterInput[ask.inputIndex] ?? 0;
+		}
+	}
 	return { asks, textAfterInput };
 }
 
-const isOpened = (ask: AskObservation) => ask.outcome === "opened";
+const isOpened = (ask: AskObservation) =>
+	ask.outcome === "opened" || ask.outcome === "deferred";
 
 function followUpAfterFirstAnswer(observed: AskObservations) {
-	const firstOpened = observed.asks.find(isOpened);
+	const firstOpened = observed.asks.find(
+		(ask) => isOpened(ask) && ask.answered
+	);
 	if (!firstOpened) {
 		return null;
 	}
@@ -285,7 +321,9 @@ function followUpAfterFirstAnswer(observed: AskObservations) {
 		askCalls: later.length,
 		openedAsks: laterOpened.length,
 		firstCallHadText: later[0] ? later[0].textChars > 0 : null,
-		firstOpenedHadText: laterOpened[0] ? laterOpened[0].textChars > 0 : null,
+		firstOpenedHadText: laterOpened[0]
+			? laterOpened[0].textBeforeForm > 0
+			: null,
 	};
 }
 
@@ -315,19 +353,22 @@ function refusalFollowUps(transcript: readonly TranscriptEntry[]) {
  */
 export function askContextMetrics(
 	transcript: readonly TranscriptEntry[],
-	factPattern?: string
+	factPattern?: string,
+	deferredForms: ReadonlyMap<string | undefined, DeferredForm> = new Map()
 ) {
-	const observed = observeAsks(transcript, factPattern);
+	const observed = observeAsks(transcript, factPattern, deferredForms);
 	const { asks } = observed;
 	const opened = asks.filter(isOpened);
 	const first = asks[0];
 	return {
 		askCalls: asks.length,
 		openedAsks: opened.length,
-		refusedAsks: asks.filter((ask) => ask.outcome === "refused").length,
+		refusedAsks: asks.filter(
+			(ask) => ask.outcome === "refused" || ask.outcome === "deferred"
+		).length,
 		invalidAsks: asks.filter((ask) => ask.outcome === "invalid").length,
 		asksWithoutText: asks.filter((ask) => ask.textChars === 0).length,
-		openedWithoutText: opened.filter((ask) => ask.textChars === 0).length,
+		openedWithoutText: opened.filter((ask) => ask.textBeforeForm === 0).length,
 		firstAsk: first
 			? {
 					textChars: first.textChars,

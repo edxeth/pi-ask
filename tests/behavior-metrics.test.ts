@@ -292,6 +292,98 @@ test("after a refusal, an explanation that ends the turn differs from another to
 	});
 });
 
+const answered = new Map([["a1", { answered: true }]]);
+
+test("a deferred first form counts as opened after the explanation, and its answer anchors the follow-up", () => {
+	const metrics = askContextMetrics(
+		[
+			prompt,
+			assistant("", [{ id: "a1" }]),
+			askResult("a1", "missing_context"),
+			assistant("Here is what I found."),
+			{ role: "user", text: "Goal: Speed" },
+			assistant("Done."),
+		],
+		undefined,
+		answered
+	);
+	assert.deepEqual(
+		{
+			openedAsks: metrics.openedAsks,
+			openedWithoutText: metrics.openedWithoutText,
+			refusedAsks: metrics.refusedAsks,
+			afterFirstAnswer: metrics.afterFirstAnswer,
+		},
+		{
+			openedAsks: 1,
+			openedWithoutText: 0,
+			refusedAsks: 1,
+			afterFirstAnswer: {
+				textChars: "Done.".length,
+				askCalls: 0,
+				openedAsks: 0,
+				firstCallHadText: null,
+				firstOpenedHadText: null,
+			},
+		}
+	);
+});
+
+test("a deferred follow-up after a normal first form opens with the explanation before it", () => {
+	const metrics = askContextMetrics(
+		[
+			prompt,
+			assistant("Two designs exist.", [{ id: "a0" }]),
+			askResult("a0"),
+			assistant("", [{ id: "a1" }]),
+			askResult("a1", "missing_context"),
+			assistant("The difference is where notes live."),
+			{ role: "user", text: "Storage: Files" },
+			assistant("Done."),
+		],
+		undefined,
+		answered
+	);
+	assert.deepEqual(metrics.afterFirstAnswer, {
+		textChars: "The difference is where notes live.".length,
+		askCalls: 1,
+		openedAsks: 1,
+		firstCallHadText: false,
+		firstOpenedHadText: true,
+	});
+	assert.equal(metrics.openedWithoutText, 0);
+});
+
+test("a refusal followed by a user message is not a deferred form without a bridge event", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("", [{ id: "a1" }]),
+		askResult("a1", "missing_context"),
+		assistant("Here is what I found."),
+		{ role: "user", text: "Something else" },
+		assistant("OK."),
+	]);
+	assert.equal(metrics.openedAsks, 0);
+	assert.equal(metrics.refusedAsks, 1);
+	assert.equal(metrics.afterFirstAnswer, null);
+});
+
+test("a cancelled deferred form counts as opened but has no answer to anchor on", () => {
+	const metrics = askContextMetrics(
+		[
+			prompt,
+			assistant("", [{ id: "a1" }]),
+			askResult("a1", "missing_context"),
+			assistant("Here is what I found."),
+		],
+		undefined,
+		new Map([["a1", { answered: false }]])
+	);
+	assert.equal(metrics.openedAsks, 1);
+	assert.equal(metrics.openedWithoutText, 0);
+	assert.equal(metrics.afterFirstAnswer, null);
+});
+
 test("an invalid payload is not user input, so it does not reset the window", () => {
 	const metrics = askContextMetrics([
 		prompt,

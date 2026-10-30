@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { findLatestPayloadInCurrentBranch } from "../src/ask-payload-store.ts";
 import {
 	DeferredAsks,
 	registerDeferredAskOpening,
 } from "../src/deferred-ask.ts";
 import type { AskParams } from "../src/types.ts";
+
+const HAS_UI = "hasUI";
+const noop = () => {
+	// intentional test callback
+};
 
 const params: AskParams = {
 	questions: [
@@ -34,11 +40,6 @@ const submitted = {
 	answers: { goal: { values: ["speed"], labels: ["Speed"], indices: [1] } },
 };
 
-const HAS_UI = "hasUI";
-const noop = () => {
-	// intentional test callback
-};
-
 async function until(condition: () => boolean, timeoutMs = 2000) {
 	const deadline = Date.now() + timeoutMs;
 	while (!condition() && Date.now() < deadline) {
@@ -54,10 +55,27 @@ function userEntry(id: string) {
 	};
 }
 
-function setup(lastUserId: string) {
+/** The explanation turn: its stop reason tells whether the run ended with the model's reply. */
+function replyEntry(stopReason: string) {
+	return {
+		type: "message",
+		id: "reply",
+		message: {
+			role: "assistant",
+			stopReason,
+			content: [{ type: "text", text: "Here is what I found." }],
+		},
+	};
+}
+
+function setup(lastUserId: string, replyStop = "stop") {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	const branch: Record<string, unknown>[] = [
+		userEntry(lastUserId),
+		replyEntry(replyStop),
+	];
+	const steps: string[] = [];
 	const sent: string[] = [];
-	let opened = 0;
 	const pi = {
 		on(name: string, handler: (event: unknown, ctx: unknown) => void) {
 			handlers.set(name, handler);
@@ -65,6 +83,16 @@ function setup(lastUserId: string) {
 		sendUserMessage(text: string) {
 			sent.push(text);
 		},
+		appendEntry(customType: string, data: unknown) {
+			steps.push(`append ${customType}`);
+			branch.push({
+				type: "custom",
+				id: `entry-${branch.length}`,
+				customType,
+				data,
+			});
+		},
+		setLabel: noop,
 		getCommands: () => [],
 		events: { emit: noop, on: noop },
 		exec: async () => ({ code: 0, stdout: "", stderr: "" }),
@@ -74,12 +102,12 @@ function setup(lastUserId: string) {
 		[HAS_UI]: true,
 		cwd: process.cwd(),
 		isIdle: () => true,
-		sessionManager: { getBranch: () => [userEntry(lastUserId)] },
+		sessionManager: { getBranch: () => branch },
 		ui: {
 			setWorkingVisible: noop,
 			notify: noop,
 			custom() {
-				opened++;
+				steps.push("open form");
 				return Promise.resolve(submitted);
 			},
 		},
@@ -91,11 +119,14 @@ function setup(lastUserId: string) {
 		undefined,
 		new AbortController().signal
 	);
-	const settle = async (aborted = false) => {
-		handlers.get("agent_settled")?.({ type: "agent_settled", aborted }, ctx);
+	// pi 1.0.2 emits only the type; pi 1.4 and later add aborted.
+	const settle = async (
+		event: Record<string, unknown> = { type: "agent_settled" }
+	) => {
+		handlers.get("agent_settled")?.(event, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	};
-	return { asks, sent, settle, opened: () => opened };
+	return { asks, ctx, sent, settle, steps };
 }
 
 test("a refusal is recorded once per user input, and the waiting form is taken once", () => {
@@ -111,28 +142,41 @@ test("a refusal is recorded once per user input, and the waiting form is taken o
 	assert.equal(asks.refused("u1"), true);
 });
 
-test("after the explanation turn settles, the refused form opens and its answer goes back as a user message", async () => {
-	const { asks, sent, settle, opened } = setup("u1");
+test("after the explanation turn, the refused form is saved for replay, opens, and its answer goes back as a user message", async () => {
+	const { asks, ctx, sent, settle, steps } = setup("u1");
 	asks.defer({ boundaryId: "u1", params, toolCallId: "a1" });
 	await settle();
 	await until(() => sent.length > 0);
-	assert.equal(opened(), 1);
+	assert.deepEqual(steps, ["append ask:payload", "open form"]);
 	assert.deepEqual(sent, ["Goal: Speed"]);
+	const replay = findLatestPayloadInCurrentBranch(ctx as never, "tool");
+	assert.equal(replay.data?.sourceEntryId, "a1");
+	assert.deepEqual(replay.data?.params, params);
 });
 
 test("a user message since the refusal makes the waiting form stale", async () => {
-	const { asks, sent, settle, opened } = setup("u2");
+	const { asks, sent, settle, steps } = setup("u2");
 	asks.defer({ boundaryId: "u1", params, toolCallId: "a1" });
 	await settle();
-	assert.equal(opened(), 0);
+	assert.deepEqual(steps, []);
 	assert.deepEqual(sent, []);
 });
 
-test("an aborted turn drops the waiting form", async () => {
-	const { asks, sent, settle, opened } = setup("u1");
+test("an aborted or failed explanation turn drops the waiting form, with the event pi 1.0.2 emits", async () => {
+	for (const stopReason of ["aborted", "error", "toolUse"]) {
+		const { asks, sent, settle, steps } = setup("u1", stopReason);
+		asks.defer({ boundaryId: "u1", params, toolCallId: "a1" });
+		await settle();
+		await settle();
+		assert.deepEqual(steps, [], stopReason);
+		assert.deepEqual(sent, [], stopReason);
+	}
+});
+
+test("the abort flag of pi 1.4 also drops the waiting form", async () => {
+	const { asks, sent, settle, steps } = setup("u1");
 	asks.defer({ boundaryId: "u1", params, toolCallId: "a1" });
-	await settle(true);
-	await settle();
-	assert.equal(opened(), 0);
+	await settle({ type: "agent_settled", aborted: true });
+	assert.deepEqual(steps, []);
 	assert.deepEqual(sent, []);
 });
