@@ -45,7 +45,7 @@ The public tool schema has no option `value` property. Supply a label; the tool 
 - option `label` is required in the public schema; before schema validation, a missing or blank string label is derived from a non-empty `value` by replacing hyphens and underscores with spaces and capitalizing the first character
 - `recommended` is optional presentation metadata; zero, one, or multiple options may set it to `true`
 - recommended options render warning-colored `(recommended)` followed by muted ` | <description>` on the row under the label, or only `(recommended)` when no description exists; recommendations never preselect an answer
-- `type` defaults to `single`
+- `type` defaults to `single`; before schema validation, a tool-call question that omits `type` and gives every option non-blank preview text becomes `preview`, because only preview questions show option previews
 - `required` defaults to `false`
 - `required` is metadata only; it never blocks submission
 - preview questions require preview text for every declared option; option descriptions do not satisfy this requirement, and invalid preview payloads report a fix hint to add preview text or switch to `type: "single"`

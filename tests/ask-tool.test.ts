@@ -681,6 +681,53 @@ test("ask tool prepares missing and blank option labels before schema validation
 	assert.equal(result.details.error, undefined);
 });
 
+test("a question without a type becomes a preview question when every option has preview text", async () => {
+	const { tool } = registerMockTool();
+	const option = (label: string, preview?: string) => ({ label, preview });
+	const raw = {
+		context: CONTEXT,
+		questions: [
+			{
+				id: "tone",
+				prompt: "Which tone?",
+				options: [option("Paper", "Serif text"), option("Slate", "Mono text")],
+			},
+			{
+				id: "partial",
+				prompt: "Which layout?",
+				options: [option("Sidebar", "Left list"), option("Tabs")],
+			},
+			{
+				id: "blank",
+				prompt: "Which density?",
+				options: [option("Compact", "Tight rows"), option("Roomy", "  ")],
+			},
+			{
+				id: "explicit",
+				prompt: "Which themes?",
+				type: "multi",
+				options: [option("Light", "White"), option("Dark", "Black")],
+			},
+		],
+	};
+	const prepared = tool.prepareArguments(raw) as AskParams;
+	assert.deepEqual(
+		prepared.questions.map((question) => question.type),
+		["preview", undefined, undefined, "multi"]
+	);
+	const result = await tool.execute(
+		"call-inferred-preview",
+		prepared,
+		undefined,
+		noop,
+		makeCtx(false)
+	);
+	assert.deepEqual(
+		result.details.questions.map((question: { type: string }) => question.type),
+		["preview", "single", "single", "multi"]
+	);
+});
+
 test("public schema requires semantic identifiers and labels", () => {
 	const { tool } = registerMockTool();
 	assert.deepEqual(tool.parameters.required, ["context", "questions"]);

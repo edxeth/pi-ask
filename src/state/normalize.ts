@@ -58,10 +58,27 @@ export function prepareAskParams(input: unknown): unknown {
 			);
 			return {
 				...question,
+				// Only a preview question shows option previews. A call that gives every option
+				// preview text but omits the type means a preview question.
+				...(question.type === undefined && everyOptionHasPreview(options)
+					? { type: "preview" }
+					: {}),
 				options: options.map((option) => fillOptionValue(option, used)),
 			};
 		}),
 	};
+}
+
+function everyOptionHasPreview(options: readonly unknown[]): boolean {
+	return (
+		options.length > 0 &&
+		options.every(
+			(option) =>
+				isRecord(option) &&
+				typeof option.preview === "string" &&
+				option.preview.trim() !== ""
+		)
+	);
 }
 
 function fillOptionValue(input: unknown, used: Set<string>): unknown {
