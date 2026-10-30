@@ -83,6 +83,7 @@ interface TranscriptEvent {
 	message?: {
 		content?: string | readonly ContentPart[];
 		details?: { cancelReason?: string };
+		isError?: boolean;
 		role: string;
 		toolCallId?: string;
 		toolName?: string;
@@ -95,6 +96,8 @@ interface TranscriptEvent {
 export interface TranscriptEntry {
 	blocks?: string[];
 	cancelReason?: string;
+	/** Tool results only: refusals, invalid payloads and schema failures open no form. */
+	isError?: boolean;
 	role: "assistant" | "toolResult" | "user";
 	text: string;
 	toolCallId?: string;
@@ -139,6 +142,7 @@ function toTranscriptEntry(
 			toolName: message.toolName,
 			toolCallId: message.toolCallId,
 			cancelReason: message.details?.cancelReason,
+			isError: message.isError === true,
 		};
 	}
 	return message.role === "user" ? { role: "user", text } : undefined;
@@ -169,16 +173,24 @@ export function costTotal(events: readonly TranscriptEvent[]): number {
 }
 
 const REFUSED = "missing_context";
-// The user never saw a form for these results, so they do not start a new user input.
-const NOT_USER_INPUT = new Set([REFUSED, "invalid_input"]);
 
+/** An error result (refusal, invalid payload, schema failure) opened no form, so it is not user input. */
 function isUserInput(entry: TranscriptEntry): boolean {
 	return (
 		entry.role === "user" ||
 		(entry.role === "toolResult" &&
 			entry.toolName === "ask_user" &&
-			!NOT_USER_INPUT.has(entry.cancelReason ?? ""))
+			entry.isError !== true)
 	);
+}
+
+type AskOutcome = "opened" | "refused" | "invalid";
+
+function askOutcome(result: TranscriptEntry | undefined): AskOutcome {
+	if (result?.cancelReason === REFUSED) {
+		return "refused";
+	}
+	return result?.isError === true ? "invalid" : "opened";
 }
 
 interface AskObservation {
@@ -186,7 +198,7 @@ interface AskObservation {
 	factInText?: boolean;
 	/** User inputs seen before this call; the prompt is the first input. */
 	inputIndex: number;
-	refused: boolean;
+	outcome: AskOutcome;
 	/** Assistant message text since the last user input, including the calling message. */
 	textChars: number;
 }
@@ -200,7 +212,7 @@ interface AskObservations {
 interface AskWindow {
 	fact: RegExp | undefined;
 	inputIndex: number;
-	refusedIds: ReadonlySet<string | undefined>;
+	results: ReadonlyMap<string | undefined, TranscriptEntry>;
 	text: string;
 }
 
@@ -210,7 +222,7 @@ function observeCall(
 ): AskObservation {
 	return {
 		inputIndex: window.inputIndex,
-		refused: window.refusedIds.has(call.id),
+		outcome: askOutcome(window.results.get(call.id)),
 		textChars: window.text.trim().length,
 		...(window.fact
 			? {
@@ -226,10 +238,12 @@ function observeAsks(
 	factPattern?: string
 ): AskObservations {
 	const fact = factPattern ? new RegExp(factPattern, "i") : undefined;
-	const refusedIds = new Set(
+	const results = new Map(
 		transcript
-			.filter((entry) => entry.cancelReason === REFUSED)
-			.map((entry) => entry.toolCallId)
+			.filter(
+				(entry) => entry.role === "toolResult" && entry.toolName === "ask_user"
+			)
+			.map((entry) => [entry.toolCallId, entry] as const)
 	);
 	const asks: AskObservation[] = [];
 	const textAfterInput: number[] = [0];
@@ -246,7 +260,7 @@ function observeAsks(
 		const inputIndex = textAfterInput.length - 1;
 		windowText += `${entry.text}\n`;
 		textAfterInput[inputIndex] += entry.text.trim().length;
-		const window = { fact, inputIndex, refusedIds, text: windowText };
+		const window = { fact, inputIndex, results, text: windowText };
 		asks.push(
 			...(entry.toolCalls ?? [])
 				.filter((call) => call.name === "ask_user")
@@ -256,14 +270,16 @@ function observeAsks(
 	return { asks, textAfterInput };
 }
 
+const isOpened = (ask: AskObservation) => ask.outcome === "opened";
+
 function followUpAfterFirstAnswer(observed: AskObservations) {
-	const firstOpened = observed.asks.find((ask) => !ask.refused);
+	const firstOpened = observed.asks.find(isOpened);
 	if (!firstOpened) {
 		return null;
 	}
 	const answerInput = firstOpened.inputIndex + 1;
 	const later = observed.asks.filter((ask) => ask.inputIndex === answerInput);
-	const laterOpened = later.filter((ask) => !ask.refused);
+	const laterOpened = later.filter(isOpened);
 	return {
 		textChars: observed.textAfterInput[answerInput] ?? 0,
 		askCalls: later.length,
@@ -283,12 +299,13 @@ export function askContextMetrics(
 ) {
 	const observed = observeAsks(transcript, factPattern);
 	const { asks } = observed;
-	const opened = asks.filter((ask) => !ask.refused);
+	const opened = asks.filter(isOpened);
 	const first = asks[0];
 	return {
 		askCalls: asks.length,
 		openedAsks: opened.length,
-		refusedAsks: asks.length - opened.length,
+		refusedAsks: asks.filter((ask) => ask.outcome === "refused").length,
+		invalidAsks: asks.filter((ask) => ask.outcome === "invalid").length,
 		asksWithoutText: asks.filter((ask) => ask.textChars === 0).length,
 		openedWithoutText: opened.filter((ask) => ask.textChars === 0).length,
 		firstAsk: first

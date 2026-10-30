@@ -427,14 +427,34 @@ function askValidationErrors(events, refused) {
 		.map((e) => e.result);
 }
 
-function refusedAskIds(events) {
+/** Refused and invalid asks open no form, so the bridge never sees them; count opened asks only. */
+function classifyAsks(calls, events) {
+	const refused = askIdsWhere(
+		events,
+		(e) => e.result?.details?.cancelReason === "missing_context"
+	);
+	const withoutForm = askIdsWhere(
+		events,
+		(e) =>
+			e.isError === true ||
+			["missing_context", "invalid_input"].includes(
+				e.result?.details?.cancelReason
+			)
+	);
+	return {
+		refused,
+		asks: calls.filter((c) => c.name === "ask_user" && !withoutForm.has(c.id)),
+	};
+}
+
+function askIdsWhere(events, matches) {
 	return new Set(
 		events
 			.filter(
 				(e) =>
 					e.type === "tool_execution_end" &&
 					e.toolName === "ask_user" &&
-					e.result?.details?.cancelReason === "missing_context"
+					matches(e)
 			)
 			.map((e) => e.toolCallId)
 	);
@@ -477,9 +497,7 @@ async function buildRecord({
 					.map((p) => p.text) ?? []
 		)
 		.join("\n");
-	// A refused ask opens no form, so the bridge never sees it; count opened asks only.
-	const refused = refusedAskIds(events);
-	const asks = calls.filter((c) => c.name === "ask_user" && !refused.has(c.id));
+	const { asks, refused } = classifyAsks(calls, events);
 	if (asks.length > 0 && !trace.some((event) => event.kind === "started")) {
 		throw new Error("Bridge failure: ask_user ran without a started event");
 	}

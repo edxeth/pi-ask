@@ -118,6 +118,8 @@ function askResult(toolCallId: string, cancelReason?: string): TranscriptEntry {
 		toolName: "ask_user",
 		toolCallId,
 		cancelReason,
+		isError:
+			cancelReason === "missing_context" || cancelReason === "invalid_input",
 	};
 }
 
@@ -145,6 +147,7 @@ test("transcript keeps finalized messages with block order, tool calls, and canc
 				toolName: "ask_user",
 				toolCallId: "a1",
 				details: { cancelReason: "missing_context" },
+				isError: true,
 				content: [{ type: "text", text: "ask_user did not open." }],
 			},
 		},
@@ -163,6 +166,7 @@ test("transcript keeps finalized messages with block order, tool calls, and canc
 			toolName: "ask_user",
 			toolCallId: "a1",
 			cancelReason: "missing_context",
+			isError: true,
 		},
 	]);
 });
@@ -273,6 +277,73 @@ test("an invalid payload is not user input, so it does not reset the window", ()
 		askResult("a2"),
 	]);
 	assert.equal(metrics.asksWithoutText, 0);
+});
+
+test("an invalid payload opens no form, so it is neither an opened ask nor an answer", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("", [{ id: "a1" }]),
+		askResult("a1", "invalid_input"),
+		assistant("Final answer."),
+	]);
+	assert.deepEqual(
+		{
+			askCalls: metrics.askCalls,
+			openedAsks: metrics.openedAsks,
+			invalidAsks: metrics.invalidAsks,
+			asksWithoutText: metrics.asksWithoutText,
+			openedWithoutText: metrics.openedWithoutText,
+			afterFirstAnswer: metrics.afterFirstAnswer,
+		},
+		{
+			askCalls: 1,
+			openedAsks: 0,
+			invalidAsks: 1,
+			asksWithoutText: 1,
+			openedWithoutText: 0,
+			afterFirstAnswer: null,
+		}
+	);
+});
+
+test("after an invalid payload, the valid ask is the first opened form and its answer the first answer", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("", [{ id: "a1" }]),
+		askResult("a1", "invalid_input"),
+		assistant("Context.", [{ id: "a2" }]),
+		askResult("a2"),
+		assistant("Done."),
+	]);
+	assert.equal(metrics.openedAsks, 1);
+	assert.equal(metrics.openedWithoutText, 0);
+	assert.equal(metrics.invalidAsks, 1);
+	assert.deepEqual(metrics.afterFirstAnswer, {
+		textChars: "Done.".length,
+		askCalls: 0,
+		openedAsks: 0,
+		firstCallHadText: null,
+		firstOpenedHadText: null,
+	});
+});
+
+test("a schema failure without a cancel reason is an error result, so it opens no form and is not input", () => {
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("Context first.", [{ id: "a1" }]),
+		{
+			role: "toolResult",
+			text: "Validation failed",
+			toolName: "ask_user",
+			toolCallId: "a1",
+			isError: true,
+		},
+		assistant("", [{ id: "a2" }]),
+		askResult("a2"),
+	]);
+	assert.equal(metrics.asksWithoutText, 0);
+	assert.equal(metrics.openedAsks, 1);
+	assert.equal(metrics.invalidAsks, 1);
 });
 
 test("two asks in one message share that message's text", () => {
