@@ -554,6 +554,11 @@ async function buildRecord({
 		assistantText: text,
 		bridgeTrace: trace,
 		askContext: askContextMetrics(transcript, behavior.factPattern),
+		// Forms that ask_user refused for missing context and opened after the explanation turn.
+		deferredForms: trace.filter(
+			(event) =>
+				event.kind === "started" && event.event?.source === "ask:deferred"
+		).length,
 		transcript,
 		tokenUsage: tokenUsage(events),
 		costTotal: costTotal(events),

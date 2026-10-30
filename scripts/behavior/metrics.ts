@@ -289,6 +289,26 @@ function followUpAfterFirstAnswer(observed: AskObservations) {
 	};
 }
 
+/** After each refusal: did the next assistant message explain in text and end the turn, or call a tool again? */
+function refusalFollowUps(transcript: readonly TranscriptEntry[]) {
+	let explainedThenEnded = 0;
+	let calledAgain = 0;
+	transcript.forEach((entry, index) => {
+		if (entry.role !== "toolResult" || entry.cancelReason !== REFUSED) {
+			return;
+		}
+		const next = transcript
+			.slice(index + 1)
+			.find((later) => later.role === "assistant");
+		if ((next?.toolCalls ?? []).length > 0) {
+			calledAgain++;
+		} else if (next?.text.trim()) {
+			explainedThenEnded++;
+		}
+	});
+	return { explainedThenEnded, calledAgain };
+}
+
 /**
  * Whether the user could read an explanation before each ask_user form.
  * Text counts when any assistant message since the last user input has a text block.
@@ -316,6 +336,7 @@ export function askContextMetrics(
 				}
 			: null,
 		afterFirstAnswer: followUpAfterFirstAnswer(observed),
+		afterRefusal: refusalFollowUps(transcript),
 	};
 }
 

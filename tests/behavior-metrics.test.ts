@@ -268,6 +268,30 @@ test("a refusal is not user input, so earlier text still counts for the retry", 
 	assert.equal(metrics.refusedAsks, 1);
 });
 
+test("after a refusal, an explanation that ends the turn differs from another tool call", () => {
+	const explained = askContextMetrics([
+		prompt,
+		assistant("", [{ id: "a1" }]),
+		askResult("a1", "missing_context"),
+		assistant("Here is what I found and why it matters."),
+	]);
+	assert.deepEqual(explained.afterRefusal, {
+		explainedThenEnded: 1,
+		calledAgain: 0,
+	});
+	const askedAgain = askContextMetrics([
+		prompt,
+		assistant("", [{ id: "a1" }]),
+		askResult("a1", "missing_context"),
+		assistant("", [{ id: "a2" }]),
+		askResult("a2"),
+	]);
+	assert.deepEqual(askedAgain.afterRefusal, {
+		explainedThenEnded: 0,
+		calledAgain: 1,
+	});
+});
+
 test("an invalid payload is not user input, so it does not reset the window", () => {
 	const metrics = askContextMetrics([
 		prompt,

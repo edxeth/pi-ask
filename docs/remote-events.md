@@ -25,14 +25,14 @@ type PiAskStartedEvent = {
   version: 1;
   flowId: string;
   toolCallId?: string;
-  source: "tool" | "answer" | "answer:again" | "ask:replay" | "ask:resume";
+  source: "tool" | "answer" | "answer:again" | "ask:replay" | "ask:resume" | "ask:deferred";
   title?: string;
   questions: AskQuestion[];
   createdAt: number;
 };
 ```
 
-Use `flowId` for submit/correlation. Use `questions[].id` and `questions[].options[].value` for answers. `ask:resume` identifies a form recovered from an interrupted tool call. Started-event options preserve the public optional `recommended` boolean, which is presentation metadata only and never changes remote submission values or labels.
+Use `flowId` for submit/correlation. Use `questions[].id` and `questions[].options[].value` for answers. `ask:resume` identifies a form recovered from an interrupted tool call. `ask:deferred` identifies a form that `ask_user` refused for missing context and opened after the model's explanation turn; its `toolCallId` is the refused call. Started-event options preserve the public optional `recommended` boolean, which is presentation metadata only and never changes remote submission values or labels.
 
 ## Submit an answer
 
@@ -111,7 +111,7 @@ type PiAskCompletedEvent = {
   version: 1;
   flowId: string;
   toolCallId?: string;
-  source: "tool" | "answer" | "answer:again" | "ask:replay" | "ask:resume";
+  source: "tool" | "answer" | "answer:again" | "ask:replay" | "ask:resume" | "ask:deferred";
   result: AskResult;
   completedAt: number;
 };
