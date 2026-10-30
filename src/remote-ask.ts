@@ -17,7 +17,8 @@ export type RemoteAskSource =
 	| "answer"
 	| "answer:again"
 	| "ask:replay"
-	| "ask:resume";
+	| "ask:resume"
+	| "ask:deferred";
 
 export interface RemoteAskAnswer {
 	customText?: string;

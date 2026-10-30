@@ -16,6 +16,7 @@ import {
 	validateParams,
 } from "./ask-tool-helpers.ts";
 import { getAskConfigStore } from "./config/store.ts";
+import { DeferredAsks } from "./deferred-ask.ts";
 import {
 	ASK_TOOL_DESCRIPTION,
 	ASK_TOOL_PROMPT_GUIDELINES,
@@ -32,10 +33,9 @@ import { runAskFlow } from "./ui/controller.ts";
 export function registerAskTool(
 	pi: ExtensionAPI,
 	remoteAsk?: RemoteAskRuntime,
-	shutdownSignal?: AbortSignal
+	shutdownSignal?: AbortSignal,
+	deferredAsks: DeferredAsks = new DeferredAsks()
 ) {
-	// User inputs whose first text-less ask was refused; the next attempt opens the form.
-	const refusedInputs = new Set<string>();
 	pi.registerTool({
 		executionMode: "sequential",
 		// Codemode scripts must not open an interactive prompt the model cannot see.
@@ -50,7 +50,7 @@ export function registerAskTool(
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			executeAskTool(
 				pi,
-				refusedInputs,
+				deferredAsks,
 				toolCallId,
 				params as AskParams,
 				signal,
@@ -72,14 +72,16 @@ function refuseWithoutContext(
 	ctx: ExtensionContext,
 	toolCallId: string,
 	params: AskParams,
-	refusedInputs: Set<string>
+	deferredAsks: DeferredAsks
 ) {
 	const context = findAskContext(ctx.sessionManager.getBranch(), toolCallId);
 	// One refusal per user input, so a model that ignores it cannot loop.
-	if (context.hasText || refusedInputs.has(context.boundaryId)) {
+	if (context.hasText || deferredAsks.refused(context.boundaryId)) {
+		// This form opens now, so no refused form waits for the turn to end.
+		deferredAsks.clear();
 		return;
 	}
-	refusedInputs.add(context.boundaryId);
+	deferredAsks.defer({ boundaryId: context.boundaryId, params, toolCallId });
 	return missingContextResponse(params, context.blockTypes);
 }
 
@@ -88,7 +90,7 @@ async function executeAskTool(
 		ExtensionAPI,
 		"appendEntry" | "setLabel" | "exec" | "getCommands" | "events"
 	>,
-	refusedInputs: Set<string>,
+	deferredAsks: DeferredAsks,
 	toolCallId: string,
 	params: AskParams,
 	signal: AbortSignal | undefined,
@@ -109,7 +111,7 @@ async function executeAskTool(
 	}
 	const interactive = isInteractive(ctx);
 	const refusal = interactive
-		? refuseWithoutContext(ctx, toolCallId, params, refusedInputs)
+		? refuseWithoutContext(ctx, toolCallId, params, deferredAsks)
 		: undefined;
 	if (refusal) {
 		return refusal;

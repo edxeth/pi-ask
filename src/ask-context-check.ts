@@ -53,6 +53,12 @@ function lastIndexWhere(
 	return index;
 }
 
+/** Entry id of the last user input on the branch; "" when there is none. */
+export function lastUserInputId(branch: readonly SessionEntry[]): string {
+	const index = lastIndexWhere(branch, branch.length - 1, isUserInput);
+	return index >= 0 ? branch[index].id : "";
+}
+
 /**
  * What the user could read before an ask_user call: the assistant messages since the last
  * user input (a user message, or an ask result that is not an error), up to and including

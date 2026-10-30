@@ -90,7 +90,7 @@ export function missingContextResponse(
 }
 
 function formatMissingContext(blockTypes: readonly string[]): string {
-	return `ask_user did not open. Since the user's last input your messages contained only [${blockTypes.join(", ")}] blocks and no text, so the user has not read any explanation. Thinking, tool arguments and tool output are not shown as a reply. Write the context as message text now: what you found, what the decision is and why it matters, your recommendation with its reason, and the answer to anything the user asked. Then call ask_user again with the same questions.`;
+	return `ask_user did not open. Since the user's last input your messages contained only [${blockTypes.join(", ")}] blocks and no text, so the user has not read any explanation. Thinking, tool arguments and tool output are not shown as a reply. Reply now with the explanation as text: what you found, what the decision is and why it matters, your recommendation with its reason, and the answer to anything the user asked. Then end your turn without calling any tool. pi-ask opens this form for the user right after your reply.`;
 }
 
 export function nonInteractiveResponse(

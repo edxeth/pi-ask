@@ -84,6 +84,8 @@ if (
 // Declared before the batch loop: records built inside it read this constant.
 const configDoc = /docs\/configuration\.md/;
 const planMarker = /(?:^|\n)PLAN:/i;
+// pi-ask may open a refused form after the run settles and start a new run with the answer.
+const settleGraceMs = 3000;
 await mkdir(outputDir, { recursive: true });
 const upstreamCopy = modes.includes("upstream")
 	? await copyUpstream()
@@ -198,6 +200,24 @@ function parseModel(model) {
 		: { provider, modelId: id, thinking: undefined };
 }
 
+/** Finish once the run settles and no new run starts within the grace period. */
+function settleWatcher(onSettled) {
+	let timer;
+	return {
+		observe(event) {
+			if (event.type === "agent_start" || event.type === "agent_settled") {
+				clearTimeout(timer);
+			}
+			if (event.type === "agent_settled") {
+				timer = setTimeout(onSettled, settleGraceMs);
+			}
+		},
+		stop() {
+			clearTimeout(timer);
+		},
+	};
+}
+
 /** Setup order: set_model, then set_thinking_level when requested, then the prompt. */
 function setupCommands(prompt, thinking) {
 	const promptCommand = { id: "prompt", type: "prompt", message: prompt };
@@ -223,6 +243,10 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 	const events = [];
 	let buffer = "";
 	let finished = false;
+	const settle = settleWatcher(() => {
+		finished = true;
+		child.stdin.end();
+	});
 	const exit = new Promise((resolveExit, reject) => {
 		child.once("error", reject);
 		child.once("close", (code, signal) => resolveExit({ code, signal }));
@@ -252,10 +276,7 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 					if (next) {
 						child.stdin.write(`${JSON.stringify(next)}\n`);
 					}
-					if (event.type === "agent_end") {
-						finished = true;
-						child.stdin.end();
-					}
+					settle.observe(event);
 				} catch (error) {
 					stderr += `\nInvalid RPC JSON: ${error}: ${line}`;
 				}
@@ -289,6 +310,7 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 		});
 	} finally {
 		clearTimeout(timer);
+		settle.stop();
 		if (child.exitCode === null && child.signalCode === null) {
 			child.kill("SIGKILL");
 		}
