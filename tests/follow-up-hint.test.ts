@@ -16,7 +16,12 @@ const theme = { fg(_color, text) { return text; }, bg(_color, text) { return tex
 async function interactive(keys) {
   let component;
   const pending = tool.execute("call", params, undefined, () => {}, {
-    cwd: process.cwd(), mode: "tui", ui: {
+    cwd: process.cwd(), mode: "tui",
+    sessionManager: { getBranch: () => [
+      { type: "message", id: "u", message: { role: "user", content: [{ type: "text", text: "Ask me." }] } },
+      { type: "message", id: "a", message: { role: "assistant", content: [{ type: "text", text: "Here is the context." }, { type: "toolCall", id: "call", name: "ask_user", arguments: {} }] } },
+    ] },
+    ui: {
       setWorkingVisible() {},
       custom(callback) {
         return new Promise(resolve => {

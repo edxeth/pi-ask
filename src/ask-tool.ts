@@ -3,10 +3,12 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { findAskContext } from "./ask-context-check.ts";
 import { appendAskPayload } from "./ask-payload-store.ts";
 import {
 	abortedResponse,
 	invalidPayloadResponse,
+	missingContextResponse,
 	nonInteractiveResponse,
 	renderAskToolCall,
 	renderAskToolResult,
@@ -32,6 +34,8 @@ export function registerAskTool(
 	remoteAsk?: RemoteAskRuntime,
 	shutdownSignal?: AbortSignal
 ) {
+	// User inputs whose first text-less ask was refused; the next attempt opens the form.
+	const refusedInputs = new Set<string>();
 	pi.registerTool({
 		executionMode: "sequential",
 		// Codemode scripts must not open an interactive prompt the model cannot see.
@@ -46,6 +50,7 @@ export function registerAskTool(
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			executeAskTool(
 				pi,
+				refusedInputs,
 				toolCallId,
 				params as AskParams,
 				signal,
@@ -59,11 +64,31 @@ export function registerAskTool(
 	});
 }
 
+function isInteractive(ctx: ExtensionContext): boolean {
+	return ctx.mode === "tui" || (ctx.mode === "rpc" && ctx.hasUI);
+}
+
+function refuseWithoutContext(
+	ctx: ExtensionContext,
+	toolCallId: string,
+	params: AskParams,
+	refusedInputs: Set<string>
+) {
+	const context = findAskContext(ctx.sessionManager.getBranch(), toolCallId);
+	// One refusal per user input, so a model that ignores it cannot loop.
+	if (context.hasText || refusedInputs.has(context.boundaryId)) {
+		return;
+	}
+	refusedInputs.add(context.boundaryId);
+	return missingContextResponse(params, context.blockTypes);
+}
+
 async function executeAskTool(
 	pi: Pick<
 		ExtensionAPI,
 		"appendEntry" | "setLabel" | "exec" | "getCommands" | "events"
 	>,
+	refusedInputs: Set<string>,
 	toolCallId: string,
 	params: AskParams,
 	signal: AbortSignal | undefined,
@@ -82,12 +107,19 @@ async function executeAskTool(
 	if (!validation.ok) {
 		return invalidPayloadResponse(params, validation.issues);
 	}
+	const interactive = isInteractive(ctx);
+	const refusal = interactive
+		? refuseWithoutContext(ctx, toolCallId, params, refusedInputs)
+		: undefined;
+	if (refusal) {
+		return refusal;
+	}
 	appendAskPayload(pi, ctx, {
 		params,
 		source: "tool",
 		sourceEntryId: toolCallId,
 	});
-	if (ctx.mode !== "tui" && !(ctx.mode === "rpc" && ctx.hasUI)) {
+	if (!interactive) {
 		return nonInteractiveResponse(validation.state);
 	}
 	ctx.ui.setWorkingVisible(false);

@@ -71,6 +71,28 @@ export function abortedResponse(params: AskParams) {
 	};
 }
 
+/** The form stays closed: the user has read nothing since their last input. */
+export function missingContextResponse(
+	params: AskParams,
+	blockTypes: readonly string[]
+) {
+	return {
+		content: [
+			{ type: "text" as const, text: formatMissingContext(blockTypes) },
+		],
+		details: {
+			...toAskResult(createInitialState(params)),
+			cancelled: true,
+			cancelReason: "missing_context" as const,
+		},
+		isError: true,
+	};
+}
+
+function formatMissingContext(blockTypes: readonly string[]): string {
+	return `ask_user did not open. Since the user's last input your messages contained only [${blockTypes.join(", ")}] blocks and no text, so the user has not read any explanation. Thinking, tool arguments and tool output are not shown as a reply. Write the context as message text now: what you found, what the decision is and why it matters, your recommendation with its reason, and the answer to anything the user asked. Then call ask_user again with the same questions.`;
+}
+
 export function nonInteractiveResponse(
 	state: ReturnType<typeof createInitialState>
 ) {

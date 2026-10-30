@@ -57,7 +57,7 @@ The public tool schema has no option `value` property. Supply a label; the tool 
   details: {
     title?: string;
     cancelled: boolean;
-    cancelReason?: "user" | "aborted" | "ui_unavailable" | "invalid_input";
+    cancelReason?: "user" | "aborted" | "ui_unavailable" | "invalid_input" | "missing_context";
     error?: {
       kind: "invalid_input";
       issues: Array<{
@@ -177,7 +177,7 @@ While the TUI or RPC ask flow is open, `ask_user` sends a tool update after each
 
 ## Output rules
 
-- `cancelled: true` means the user dismissed the flow, the run was aborted, UI was unavailable, or the payload was invalid before UI opened; every cancelled result includes `cancelReason`: `user` for cancel or dismiss (including command flows), `aborted` for a tool run interrupted by its abort signal, `ui_unavailable` for non-interactive modes, or `invalid_input` for payload validation failures. An aborted tool result says exactly: `The ask_user form was closed because the run was aborted. No answers were collected.` It contains no answers.
+- `cancelled: true` means the user dismissed the flow, the run was aborted, UI was unavailable, or the payload was invalid before UI opened; every cancelled result includes `cancelReason`: `user` for cancel or dismiss (including command flows), `aborted` for a tool run interrupted by its abort signal, `ui_unavailable` for non-interactive modes, `invalid_input` for payload validation failures, or `missing_context` when an interactive ask was refused because no assistant message since the user's last input has text (see Execution and lifecycle). An aborted tool result says exactly: `The ask_user form was closed because the run was aborted. No answers were collected.` It contains no answers.
 - semantically invalid payloads that reach tool execution return `error.kind === "invalid_input"` with structured `issues` and a transcript-friendly `Invalid ask_user payload:` message; the result is marked `isError: true`, so the model sees a failed tool call, and its rendered status is `Invalid tool payload`
 - payloads missing schema-required fields fail Pi's schema validation before tool execution and use Pi's standard tool-error result without structured `details`
 - `mode: "submit"` is normal completion; `mode: "elaborate"` means the user asked the agent to continue with follow-up clarification based on notes
@@ -298,6 +298,8 @@ Dirty dismiss:
 While an interactive ask flow is open, pi-ask sets the `pi-ask` footer status to the current question number, or to review. The status updates when the active tab changes and clears when the flow submits, cancels, aborts, or errors. pi-ask does not change the terminal title, because pi has no API to restore it. This also applies to recovered TUI asks and RPC dialogs. Non-interactive calls do not show a waiting indicator.
 
 `ask_user` registers with `exposure: "model-only"`: pi declares it to the model, and codemode scripts and other tools cannot call it through `ctx.executeTool()`. It stays declared when `codemode.mode` is `"only"`.
+
+In TUI mode and in RPC mode with a UI, `ask_user` first checks what the user could read. It looks at the assistant messages since the user's last input (a user message, or an ask result other than `missing_context` or `invalid_input`), up to and including the calling message. If none has a non-empty text block, the form does not open and no payload is saved: the result has `isError: true`, `cancelReason: "missing_context"`, and text that names the block types the model sent and asks for the context as message text. Each user input gets at most one such refusal; the next text-less ask after the same input opens the form. Non-interactive modes skip the check.
 
 `ask_user` requests sequential execution. When one assistant message calls it alongside other tools, pi runs the entire batch one call at a time. A pre-aborted call does not open the UI; aborting an open flow closes it and emits the remote `completed` event. On session shutdown, open flows close. An interrupted recovered ask has no dismissal marker or tool result, so startup can reopen it again.
 

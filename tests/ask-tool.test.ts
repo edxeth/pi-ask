@@ -4,6 +4,7 @@ import { Value } from "typebox/value";
 import { registerAskTool } from "../src/ask-tool.ts";
 import { AskOptionSchema, AskParamsSchema } from "../src/schema.ts";
 import type { AskParams } from "../src/types.ts";
+import { sessionWithContext } from "./fixtures/ask-context.ts";
 
 const NON_INTERACTIVE_MESSAGE_RE =
 	/Needs user input: ask_user requires interactive TUI mode\./;
@@ -55,8 +56,22 @@ function registerMockTool() {
 	};
 }
 
+const CALL_IDS = [
+	"call-1",
+	"call-abort",
+	"call-blank-optionals",
+	"call-json",
+	"call-prepared-labels",
+	"call-tui",
+	"tool-answer",
+];
+
 function makeCtx(hasUi: boolean, mode = hasUi ? "tui" : "print"): unknown {
-	return { [HAS_UI]: hasUi, mode };
+	return {
+		[HAS_UI]: hasUi,
+		mode,
+		sessionManager: sessionWithContext(...CALL_IDS),
+	};
 }
 
 function sampleParams(): AskParams {
@@ -211,6 +226,7 @@ test("abort closes an open ask and emits remote completion", async () => {
 		{
 			cwd: process.cwd(),
 			mode: "tui",
+			sessionManager: sessionWithContext("call-abort"),
 			ui: {
 				setWorkingVisible() {
 					// Visibility does not affect lifecycle.
@@ -345,6 +361,7 @@ test("ask tool reports a user cancel from the TUI", async () => {
 		{
 			cwd: process.cwd(),
 			mode: "tui",
+			sessionManager: sessionWithContext("call-tui"),
 			ui: {
 				setWorkingVisible() {
 					// Visibility does not affect this tool result test.
@@ -377,6 +394,147 @@ test("ask tool reports a user cancel from the TUI", async () => {
 	assert.equal(result.details.cancelled, true);
 	assert.equal(result.details.cancelReason, "user");
 	assert.equal(result.content[0].text, "User cancelled the ask flow");
+});
+
+const MISSING_CONTEXT_TEXT_RE =
+	/^ask_user did not open\. Since the user's last input your messages contained only \[thinking, toolCall\] blocks and no text/;
+
+function textlessAsk(entryId: string, toolCallId: string) {
+	return {
+		type: "message",
+		id: entryId,
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "Explain, then ask." },
+				{ type: "toolCall", id: toolCallId, name: "ask_user", arguments: {} },
+			],
+		},
+	};
+}
+
+function userMessage(entryId: string) {
+	return {
+		type: "message",
+		id: entryId,
+		message: { role: "user", content: [{ type: "text", text: "Plan it" }] },
+	};
+}
+
+function refusalResult(entryId: string, toolCallId: string, details: unknown) {
+	return {
+		type: "message",
+		id: entryId,
+		message: {
+			role: "toolResult",
+			toolCallId,
+			toolName: "ask_user",
+			content: [{ type: "text", text: "ask_user did not open." }],
+			details,
+			isError: true,
+		},
+	};
+}
+
+function contextCheckCtx(branch: unknown[], onOpen: () => void) {
+	return {
+		cwd: process.cwd(),
+		mode: "tui",
+		[HAS_UI]: true,
+		sessionManager: { getBranch: () => branch },
+		ui: {
+			setWorkingVisible: noop,
+			custom() {
+				onOpen();
+				return Promise.resolve({
+					cancelled: true,
+					cancelReason: "user",
+					mode: "submit",
+					questions: [],
+					answers: {},
+				});
+			},
+		},
+	};
+}
+
+test("a TUI ask without message text since the user's input is refused, with no form and no saved payload", async () => {
+	const { tool, entries } = registerMockTool();
+	let opened = false;
+	const result = await tool.execute(
+		"bare-1",
+		sampleParams(),
+		undefined,
+		noop,
+		contextCheckCtx([userMessage("u1"), textlessAsk("a1", "bare-1")], () => {
+			opened = true;
+		})
+	);
+	assert.equal(result.isError, true);
+	assert.equal(result.details.cancelReason, "missing_context");
+	assert.match(result.content[0].text, MISSING_CONTEXT_TEXT_RE);
+	assert.equal(opened, false);
+	assert.deepEqual(entries, []);
+});
+
+test("the second text-less ask after one user input opens the form, and a new input is refused again", async () => {
+	const { tool } = registerMockTool();
+	let opened = 0;
+	const branch: unknown[] = [userMessage("u1"), textlessAsk("a1", "bare-1")];
+	const ctx = contextCheckCtx(branch, () => {
+		opened++;
+	});
+	const first = await tool.execute(
+		"bare-1",
+		sampleParams(),
+		undefined,
+		noop,
+		ctx
+	);
+	branch.push(
+		refusalResult("r1", "bare-1", first.details),
+		textlessAsk("a2", "bare-2")
+	);
+	const second = await tool.execute(
+		"bare-2",
+		sampleParams(),
+		undefined,
+		noop,
+		ctx
+	);
+	branch.push(userMessage("u2"), textlessAsk("a3", "bare-3"));
+	const third = await tool.execute(
+		"bare-3",
+		sampleParams(),
+		undefined,
+		noop,
+		ctx
+	);
+	assert.deepEqual(
+		[
+			first.details.cancelReason,
+			second.details.cancelReason,
+			third.details.cancelReason,
+		],
+		["missing_context", "user", "missing_context"]
+	);
+	assert.equal(opened, 1);
+});
+
+test("non-interactive modes keep the Needs user input result without a context check", async () => {
+	const { tool } = registerMockTool();
+	const result = await tool.execute(
+		"bare-print",
+		sampleParams(),
+		undefined,
+		noop,
+		{
+			mode: "print",
+			sessionManager: { getBranch: () => [] },
+		}
+	);
+	assert.match(result.content[0].text, NON_INTERACTIVE_MESSAGE_RE);
+	assert.equal(result.details.cancelReason, "ui_unavailable");
 });
 
 test("ask tool includes custom answer fallback for preview questions", async () => {
@@ -815,6 +973,7 @@ test("ask_user asks the skill provider to deliver after a submitted tool result"
 			{
 				cwd: process.cwd(),
 				mode: "tui",
+				sessionManager: sessionWithContext("tool-answer"),
 				ui: {
 					setWorkingVisible: noop,
 					custom: (callback: (...args: any[]) => unknown) =>

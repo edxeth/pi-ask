@@ -8,6 +8,7 @@ import {
 	PI_ASK_SUBMIT_EVENT,
 } from "../src/remote-ask.ts";
 import type { AskParams } from "../src/types.ts";
+import { sessionWithContext } from "./fixtures/ask-context.ts";
 
 const HAS_UI = "hasUI";
 
@@ -88,6 +89,7 @@ function setup(params: AskParams, signal = new AbortController()) {
 		{
 			mode: "rpc",
 			[HAS_UI]: true,
+			sessionManager: sessionWithContext("rpc-call"),
 			ui,
 		}
 	);
