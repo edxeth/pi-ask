@@ -85,8 +85,6 @@ if (
 const configDoc = /docs\/configuration\.md/;
 // Markdown may wrap the marker, as in "## PLAN:" or "**PLAN:".
 const planMarker = /(?:^|\n)\W{0,6}PLAN:/i;
-// pi-ask may open a refused form after the run settles and start a new run with the answer.
-const settleGraceMs = 3000;
 await mkdir(outputDir, { recursive: true });
 const upstreamCopy = modes.includes("upstream")
 	? await copyUpstream()
@@ -201,24 +199,6 @@ function parseModel(model) {
 		: { provider, modelId: id, thinking: undefined };
 }
 
-/** Finish once the run settles and no new run starts within the grace period. */
-function settleWatcher(onSettled) {
-	let timer;
-	return {
-		observe(event) {
-			if (event.type === "agent_start" || event.type === "agent_settled") {
-				clearTimeout(timer);
-			}
-			if (event.type === "agent_settled") {
-				timer = setTimeout(onSettled, settleGraceMs);
-			}
-		},
-		stop() {
-			clearTimeout(timer);
-		},
-	};
-}
-
 /** Setup order: set_model, then set_thinking_level when requested, then the prompt. */
 function setupCommands(prompt, thinking) {
 	const promptCommand = { id: "prompt", type: "prompt", message: prompt };
@@ -244,10 +224,6 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 	const events = [];
 	let buffer = "";
 	let finished = false;
-	const settle = settleWatcher(() => {
-		finished = true;
-		child.stdin.end();
-	});
 	const exit = new Promise((resolveExit, reject) => {
 		child.once("error", reject);
 		child.once("close", (code, signal) => resolveExit({ code, signal }));
@@ -277,7 +253,10 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 					if (next) {
 						child.stdin.write(`${JSON.stringify(next)}\n`);
 					}
-					settle.observe(event);
+					if (event.type === "agent_end") {
+						finished = true;
+						child.stdin.end();
+					}
 				} catch (error) {
 					stderr += `\nInvalid RPC JSON: ${error}: ${line}`;
 				}
@@ -311,7 +290,6 @@ async function execute({ model, mode, behavior, run, timeoutMs }) {
 		});
 	} finally {
 		clearTimeout(timer);
-		settle.stop();
 		if (child.exitCode === null && child.signalCode === null) {
 			child.kill("SIGKILL");
 		}
@@ -438,88 +416,20 @@ async function readBridgeTrace(tracePath) {
 	return trace;
 }
 
-/** Ask-context metrics, with the forms pi-ask opened after a refusal taken from the bridge trace. */
-function askContextFields(transcript, behavior, trace) {
-	const deferredForms = deferredFormsFromTrace(trace);
-	return {
-		askContext: askContextMetrics(
-			transcript,
-			behavior.factPattern,
-			deferredForms
-		),
-		// Forms that ask_user refused for missing context and opened after the explanation turn.
-		deferredForms: deferredForms.size,
-	};
-}
-
-/** Forms pi-ask opened after a refusal, keyed by the refused call; a cancelled form has no answer. */
-function deferredFormsFromTrace(trace) {
-	const forms = new Map();
-	for (const { kind, event } of trace) {
-		if (event?.source !== "ask:deferred" || !event.toolCallId) {
-			continue;
-		}
-		if (kind === "started") {
-			forms.set(event.toolCallId, { answered: false });
-		}
-		if (kind === "completed") {
-			forms.set(event.toolCallId, {
-				answered: event.result?.cancelled !== true,
-			});
-		}
-	}
-	return forms;
-}
-
-/** Forms the user saw: every form the bridge answered, including forms pi-ask opened after a refusal. */
+/** Forms the user saw: every form the bridge answered. */
 function formsFromTrace(trace) {
 	return trace
 		.filter((event) => event.kind === "started")
 		.map((event) => ({ args: { questions: event.event?.questions ?? [] } }));
 }
 
-function askValidationErrors(events, refused) {
-	return events
-		.filter(
-			(e) =>
-				e.type === "tool_execution_end" &&
-				e.toolName === "ask_user" &&
-				!refused.has(e.toolCallId) &&
-				(e.isError || e.result?.details?.cancelReason === "invalid_input")
-		)
-		.map((e) => e.result);
-}
-
-/** Refused and invalid asks open no form, so the bridge never sees them; count opened asks only. */
-function classifyAsks(calls, events) {
-	const refused = askIdsWhere(
-		events,
-		(e) => e.result?.details?.cancelReason === "missing_context"
-	);
-	const withoutForm = askIdsWhere(
-		events,
+/** ask_user results that opened no form: invalid payloads and schema failures. */
+function failedAsks(events) {
+	return events.filter(
 		(e) =>
-			e.isError === true ||
-			["missing_context", "invalid_input"].includes(
-				e.result?.details?.cancelReason
-			)
-	);
-	return {
-		refused,
-		asks: calls.filter((c) => c.name === "ask_user" && !withoutForm.has(c.id)),
-	};
-}
-
-function askIdsWhere(events, matches) {
-	return new Set(
-		events
-			.filter(
-				(e) =>
-					e.type === "tool_execution_end" &&
-					e.toolName === "ask_user" &&
-					matches(e)
-			)
-			.map((e) => e.toolCallId)
+			e.type === "tool_execution_end" &&
+			e.toolName === "ask_user" &&
+			(e.isError || e.result?.details?.cancelReason === "invalid_input")
 	);
 }
 
@@ -560,7 +470,12 @@ async function buildRecord({
 					.map((p) => p.text) ?? []
 		)
 		.join("\n");
-	const { asks, refused } = classifyAsks(calls, events);
+	const failed = failedAsks(events);
+	const withoutForm = new Set(failed.map((e) => e.toolCallId));
+	// The bridge sees only the asks that opened a form.
+	const asks = calls.filter(
+		(c) => c.name === "ask_user" && !withoutForm.has(c.id)
+	);
 	if (asks.length > 0 && !trace.some((event) => event.kind === "started")) {
 		throw new Error("Bridge failure: ask_user ran without a started event");
 	}
@@ -587,7 +502,7 @@ async function buildRecord({
 					reason: o.description ?? null,
 				}))
 		),
-		validationErrors: askValidationErrors(events, refused),
+		validationErrors: failed.map((e) => e.result),
 		followUp: followUpKind(forms, behavior, text),
 		configurationDocRead: calls.some(
 			(c) => c.name === "read" && configDoc.test(c.args?.path ?? "")
@@ -595,7 +510,7 @@ async function buildRecord({
 		toolCalls: calls,
 		assistantText: text,
 		bridgeTrace: trace,
-		...askContextFields(transcript, behavior, trace),
+		askContext: askContextMetrics(transcript, behavior.factPattern),
 		transcript,
 		tokenUsage: tokenUsage(events),
 		costTotal: costTotal(events),

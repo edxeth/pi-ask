@@ -118,9 +118,13 @@ function askResult(toolCallId: string, cancelReason?: string): TranscriptEntry {
 		toolName: "ask_user",
 		toolCallId,
 		cancelReason,
-		isError:
-			cancelReason === "missing_context" || cancelReason === "invalid_input",
+		isError: cancelReason === "invalid_input",
 	};
+}
+
+/** An ask_user call whose arguments carry the given context. */
+function ask(id: string, context: string, questions: unknown[] = []) {
+	return { id, args: { context, questions } };
 }
 
 test("transcript keeps finalized messages with block order, tool calls, and cancel reasons", () => {
@@ -146,9 +150,9 @@ test("transcript keeps finalized messages with block order, tool calls, and canc
 				role: "toolResult",
 				toolName: "ask_user",
 				toolCallId: "a1",
-				details: { cancelReason: "missing_context" },
+				details: { cancelReason: "invalid_input" },
 				isError: true,
-				content: [{ type: "text", text: "ask_user did not open." }],
+				content: [{ type: "text", text: "Invalid ask_user payload:" }],
 			},
 		},
 	]);
@@ -162,10 +166,10 @@ test("transcript keeps finalized messages with block order, tool calls, and canc
 		},
 		{
 			role: "toolResult",
-			text: "ask_user did not open.",
+			text: "Invalid ask_user payload:",
 			toolName: "ask_user",
 			toolCallId: "a1",
-			cancelReason: "missing_context",
+			cancelReason: "invalid_input",
 			isError: true,
 		},
 	]);
@@ -188,18 +192,45 @@ test("cost sums pi's per-request totals of assistant messages", () => {
 	);
 });
 
-test("an ask whose message has only thinking has no text before it", () => {
+test("the context of an ask explains it even when its message has only thinking", () => {
 	const metrics = askContextMetrics([
 		prompt,
-		assistant("", [{ id: "a1" }]),
+		assistant("", [ask("a1", "The ADR names deepseek.")]),
 		askResult("a1"),
 	]);
-	assert.equal(metrics.asksWithoutText, 1);
-	assert.equal(metrics.openedWithoutText, 1);
-	assert.equal(metrics.firstAsk?.textChars, 0);
+	assert.deepEqual(
+		{
+			asksWithoutContext: metrics.asksWithoutContext,
+			openedWithoutExplanation: metrics.openedWithoutExplanation,
+			firstAsk: metrics.firstAsk,
+		},
+		{
+			asksWithoutContext: 0,
+			openedWithoutExplanation: 0,
+			firstAsk: {
+				textChars: 0,
+				contextChars: "The ADR names deepseek.".length,
+				factInText: undefined,
+				factInContext: undefined,
+				factInForm: undefined,
+			},
+		}
+	);
 });
 
-test("text from an earlier message after the same user input counts before an ask", () => {
+test("an ask with neither message text nor context opens without an explanation", () => {
+	for (const context of [undefined, " \n "]) {
+		const metrics = askContextMetrics([
+			prompt,
+			assistant("", [{ id: "a1", args: { context, questions: [] } }]),
+			askResult("a1"),
+		]);
+		assert.equal(metrics.asksWithoutContext, 1, String(context));
+		assert.equal(metrics.openedWithoutExplanation, 1, String(context));
+	}
+});
+
+test("text from an earlier message after the same user input explains an ask without context", () => {
 	const metrics = askContextMetrics([
 		prompt,
 		assistant("I read the ADR. It names deepseek.", [
@@ -209,14 +240,15 @@ test("text from an earlier message after the same user input counts before an as
 		assistant("", [{ id: "a1" }]),
 		askResult("a1"),
 	]);
-	assert.equal(metrics.asksWithoutText, 0);
+	assert.equal(metrics.asksWithoutContext, 1);
+	assert.equal(metrics.openedWithoutExplanation, 0);
 	assert.equal(
 		metrics.firstAsk?.textChars,
 		"I read the ADR. It names deepseek.".length
 	);
 });
 
-test("an answered ask starts a new window, so the next ask needs new text", () => {
+test("an answered ask starts a new window, so the next ask needs new text or context", () => {
 	const metrics = askContextMetrics([
 		prompt,
 		assistant("Two designs exist.", [{ id: "a1" }]),
@@ -224,200 +256,69 @@ test("an answered ask starts a new window, so the next ask needs new text", () =
 		assistant("", [{ id: "a2" }]),
 		askResult("a2"),
 	]);
-	assert.equal(metrics.asksWithoutText, 1);
-	assert.equal(metrics.afterFirstAnswer?.firstCallHadText, false);
-});
-
-test("a refused ask keeps the window open and the retry with text opens the form", () => {
-	const metrics = askContextMetrics([
-		prompt,
-		assistant("", [{ id: "a1" }]),
-		askResult("a1", "missing_context"),
-		assistant("Here is the context.", [{ id: "a2" }]),
-		askResult("a2"),
-	]);
-	assert.deepEqual(
-		{
-			askCalls: metrics.askCalls,
-			openedAsks: metrics.openedAsks,
-			refusedAsks: metrics.refusedAsks,
-			asksWithoutText: metrics.asksWithoutText,
-			openedWithoutText: metrics.openedWithoutText,
-		},
-		{
-			askCalls: 2,
-			openedAsks: 1,
-			refusedAsks: 1,
-			asksWithoutText: 1,
-			openedWithoutText: 0,
-		}
-	);
-});
-
-test("a refusal is not user input, so earlier text still counts for the retry", () => {
-	const metrics = askContextMetrics([
-		prompt,
-		assistant("Context from the file.", [{ id: "r1", name: "read" }]),
-		{ role: "toolResult", text: "file", toolName: "read", toolCallId: "r1" },
-		assistant("", [{ id: "a1" }]),
-		askResult("a1", "missing_context"),
-		assistant("", [{ id: "a2" }]),
-		askResult("a2"),
-	]);
-	assert.equal(metrics.asksWithoutText, 0);
-	assert.equal(metrics.refusedAsks, 1);
-});
-
-test("after a refusal, an explanation that ends the turn differs from another tool call", () => {
-	const explained = askContextMetrics([
-		prompt,
-		assistant("", [{ id: "a1" }]),
-		askResult("a1", "missing_context"),
-		assistant("Here is what I found and why it matters."),
-	]);
-	assert.deepEqual(explained.afterRefusal, {
-		explainedThenEnded: 1,
-		calledAgain: 0,
-	});
-	const askedAgain = askContextMetrics([
-		prompt,
-		assistant("", [{ id: "a1" }]),
-		askResult("a1", "missing_context"),
-		assistant("", [{ id: "a2" }]),
-		askResult("a2"),
-	]);
-	assert.deepEqual(askedAgain.afterRefusal, {
-		explainedThenEnded: 0,
-		calledAgain: 1,
-	});
-});
-
-const answered = new Map([["a1", { answered: true }]]);
-
-test("a deferred first form counts as opened after the explanation, and its answer anchors the follow-up", () => {
-	const metrics = askContextMetrics(
-		[
-			prompt,
-			assistant("", [{ id: "a1" }]),
-			askResult("a1", "missing_context"),
-			assistant("Here is what I found."),
-			{ role: "user", text: "Goal: Speed" },
-			assistant("Done."),
-		],
-		undefined,
-		answered
-	);
-	assert.deepEqual(
-		{
-			openedAsks: metrics.openedAsks,
-			openedWithoutText: metrics.openedWithoutText,
-			refusedAsks: metrics.refusedAsks,
-			afterFirstAnswer: metrics.afterFirstAnswer,
-		},
-		{
-			openedAsks: 1,
-			openedWithoutText: 0,
-			refusedAsks: 1,
-			afterFirstAnswer: {
-				textChars: "Done.".length,
-				askCalls: 0,
-				openedAsks: 0,
-				firstCallHadText: null,
-				firstOpenedHadText: null,
-			},
-		}
-	);
-});
-
-test("a deferred follow-up after a normal first form opens with the explanation before it", () => {
-	const metrics = askContextMetrics(
-		[
-			prompt,
-			assistant("Two designs exist.", [{ id: "a0" }]),
-			askResult("a0"),
-			assistant("", [{ id: "a1" }]),
-			askResult("a1", "missing_context"),
-			assistant("The difference is where notes live."),
-			{ role: "user", text: "Storage: Files" },
-			assistant("Done."),
-		],
-		undefined,
-		answered
-	);
+	assert.equal(metrics.openedWithoutExplanation, 1);
 	assert.deepEqual(metrics.afterFirstAnswer, {
-		textChars: "The difference is where notes live.".length,
+		textChars: 0,
+		contextChars: 0,
 		askCalls: 1,
 		openedAsks: 1,
-		firstCallHadText: false,
-		firstOpenedHadText: true,
 	});
-	assert.equal(metrics.openedWithoutText, 0);
 });
 
-test("a refusal followed by a user message is not a deferred form without a bridge event", () => {
-	const metrics = askContextMetrics([
+test("context that repeats the message text before it counts as explained twice", () => {
+	const explanation =
+		"Files stay readable outside the app, while a database makes search faster.";
+	const twice = askContextMetrics([
 		prompt,
-		assistant("", [{ id: "a1" }]),
-		askResult("a1", "missing_context"),
-		assistant("Here is what I found."),
-		{ role: "user", text: "Something else" },
-		assistant("OK."),
+		assistant(explanation, [ask("a1", explanation)]),
+		askResult("a1"),
 	]);
-	assert.equal(metrics.openedAsks, 0);
-	assert.equal(metrics.refusedAsks, 1);
-	assert.equal(metrics.afterFirstAnswer, null);
-});
-
-test("a cancelled deferred form counts as opened but has no answer to anchor on", () => {
-	const metrics = askContextMetrics(
-		[
-			prompt,
-			assistant("", [{ id: "a1" }]),
-			askResult("a1", "missing_context"),
-			assistant("Here is what I found."),
-		],
-		undefined,
-		new Map([["a1", { answered: false }]])
-	);
-	assert.equal(metrics.openedAsks, 1);
-	assert.equal(metrics.openedWithoutText, 0);
-	assert.equal(metrics.afterFirstAnswer, null);
+	assert.equal(twice.explainedTwice, 1);
+	const once = askContextMetrics([
+		prompt,
+		assistant("I checked the storage code.", [ask("a1", explanation)]),
+		askResult("a1"),
+	]);
+	assert.equal(once.explainedTwice, 0);
 });
 
 const storageQuestion = {
-	id: "a1",
-	args: {
-		questions: [
-			{
-				label: "Q1 Storage",
-				prompt: "Q1: Store the notes as plain files or in a database?",
-			},
-		],
-	},
+	label: "Q1 Storage",
+	prompt: "Q1: Store the notes as plain files or in a database?",
 };
 
-test("a question written in the text before its form counts as repeated", () => {
-	const grilled = askContextMetrics([
+test("a question written in the text or the context before its form counts as repeated", () => {
+	const grillingRound =
+		"Two storage designs fit.\n\n❓ **Q1** - **Storage**: Files or a database?\n\n➡️ Files.";
+	const inText = askContextMetrics([
 		prompt,
-		assistant(
-			"Two storage designs fit.\n\n❓ **Q1** - **Storage**: Files or a database?\n\n➡️ Files.",
-			[storageQuestion]
-		),
+		assistant(grillingRound, [
+			ask("a1", "Storage decides sync.", [storageQuestion]),
+		]),
 		askResult("a1"),
 	]);
 	assert.deepEqual(
 		{
-			formQuestions: grilled.formQuestions,
-			repeatedQuestions: grilled.repeatedQuestions,
+			formQuestions: inText.formQuestions,
+			repeatedQuestions: inText.repeatedQuestions,
 		},
 		{ formQuestions: 1, repeatedQuestions: 1 }
 	);
+	const inContext = askContextMetrics([
+		prompt,
+		assistant("", [ask("a1", grillingRound, [storageQuestion])]),
+		askResult("a1"),
+	]);
+	assert.equal(inContext.repeatedQuestions, 1);
 	const reworded = askContextMetrics([
 		prompt,
-		assistant(
-			"Should the app store the notes as plain files or in a database?",
-			[storageQuestion]
-		),
+		assistant("", [
+			ask(
+				"a1",
+				"Should the app store the notes as plain files or in a database?",
+				[storageQuestion]
+			),
+		]),
 		askResult("a1"),
 	]);
 	assert.equal(reworded.repeatedQuestions, 1);
@@ -427,15 +328,10 @@ test("a question without its own label is repeated under the number the form sho
 	for (const label of [undefined, "  "]) {
 		const metrics = askContextMetrics([
 			prompt,
-			assistant("❓ **Q1** - Pick a backend: local files or a database?", [
-				{
-					id: "a1",
-					args: {
-						questions: [
-							{ label, prompt: "Should we keep all the records in SQLite?" },
-						],
-					},
-				},
+			assistant("", [
+				ask("a1", "❓ **Q1** - Pick a backend: local files or a database?", [
+					{ label, prompt: "Should we keep all the records in SQLite?" },
+				]),
 			]),
 			askResult("a1"),
 		]);
@@ -446,21 +342,24 @@ test("a question without its own label is repeated under the number the form sho
 test("an exact repeat of a three-word prompt counts", () => {
 	const metrics = askContextMetrics([
 		prompt,
-		assistant("Enable offline sync?", [
-			{ id: "a1", args: { questions: [{ prompt: "Enable offline sync?" }] } },
+		assistant("", [
+			ask("a1", "Enable offline sync?", [{ prompt: "Enable offline sync?" }]),
 		]),
 		askResult("a1"),
 	]);
 	assert.equal(metrics.repeatedQuestions, 1);
 });
 
-test("context in the text, and a passing mention of a question number, do not repeat the question", () => {
+test("an explanation, and a passing mention of a question number, do not repeat the question", () => {
 	const metrics = askContextMetrics([
 		prompt,
-		assistant(
-			"Files stay readable outside the app. A database makes search faster. Your Q1 note asked about backups: both designs back up the same way.",
-			[storageQuestion]
-		),
+		assistant("Your Q1 note asked about backups.", [
+			ask(
+				"a1",
+				"Files stay readable outside the app. A database makes search faster. Both designs back up the same way.",
+				[storageQuestion]
+			),
+		]),
 		askResult("a1"),
 	]);
 	assert.equal(metrics.repeatedQuestions, 0);
@@ -474,7 +373,7 @@ test("an invalid payload is not user input, so it does not reset the window", ()
 		assistant("", [{ id: "a2" }]),
 		askResult("a2"),
 	]);
-	assert.equal(metrics.asksWithoutText, 0);
+	assert.equal(metrics.openedWithoutExplanation, 0);
 });
 
 test("an invalid payload opens no form, so it is neither an opened ask nor an answer", () => {
@@ -489,16 +388,14 @@ test("an invalid payload opens no form, so it is neither an opened ask nor an an
 			askCalls: metrics.askCalls,
 			openedAsks: metrics.openedAsks,
 			invalidAsks: metrics.invalidAsks,
-			asksWithoutText: metrics.asksWithoutText,
-			openedWithoutText: metrics.openedWithoutText,
+			openedWithoutExplanation: metrics.openedWithoutExplanation,
 			afterFirstAnswer: metrics.afterFirstAnswer,
 		},
 		{
 			askCalls: 1,
 			openedAsks: 0,
 			invalidAsks: 1,
-			asksWithoutText: 1,
-			openedWithoutText: 0,
+			openedWithoutExplanation: 0,
 			afterFirstAnswer: null,
 		}
 	);
@@ -507,21 +404,21 @@ test("an invalid payload opens no form, so it is neither an opened ask nor an an
 test("after an invalid payload, the valid ask is the first opened form and its answer the first answer", () => {
 	const metrics = askContextMetrics([
 		prompt,
-		assistant("", [{ id: "a1" }]),
+		assistant("", [ask("a1", " ")]),
 		askResult("a1", "invalid_input"),
-		assistant("Context.", [{ id: "a2" }]),
+		assistant("", [ask("a2", "Context.")]),
 		askResult("a2"),
 		assistant("Done."),
 	]);
 	assert.equal(metrics.openedAsks, 1);
-	assert.equal(metrics.openedWithoutText, 0);
+	assert.equal(metrics.openedWithoutExplanation, 0);
 	assert.equal(metrics.invalidAsks, 1);
+	assert.equal(metrics.asksWithoutContext, 1);
 	assert.deepEqual(metrics.afterFirstAnswer, {
 		textChars: "Done.".length,
+		contextChars: 0,
 		askCalls: 0,
 		openedAsks: 0,
-		firstCallHadText: null,
-		firstOpenedHadText: null,
 	});
 });
 
@@ -539,7 +436,7 @@ test("a schema failure without a cancel reason is an error result, so it opens n
 		assistant("", [{ id: "a2" }]),
 		askResult("a2"),
 	]);
-	assert.equal(metrics.asksWithoutText, 0);
+	assert.equal(metrics.openedWithoutExplanation, 0);
 	assert.equal(metrics.openedAsks, 1);
 	assert.equal(metrics.invalidAsks, 1);
 });
@@ -551,57 +448,113 @@ test("two asks in one message share that message's text", () => {
 		askResult("a1"),
 		askResult("a2"),
 	]);
-	assert.equal(metrics.asksWithoutText, 0);
+	assert.equal(metrics.openedWithoutExplanation, 0);
 	assert.equal(metrics.askCalls, 2);
 });
 
-test("after the first answer: text before the next form, or no form at all", () => {
+test("after the first answer: an explanation in the next form's context, or text and no form", () => {
 	const answeredThenAsked = askContextMetrics([
 		prompt,
-		assistant("Options: A or B.", [{ id: "a1" }]),
+		assistant("", [ask("a1", "Options: A or B.")]),
 		askResult("a1"),
-		assistant("A keeps notes local; B syncs them.", [{ id: "a2" }]),
+		assistant("", [ask("a2", "A keeps notes local; B syncs them.")]),
 		askResult("a2"),
 	]);
 	assert.deepEqual(answeredThenAsked.afterFirstAnswer, {
-		textChars: "A keeps notes local; B syncs them.".length,
+		textChars: 0,
+		contextChars: "A keeps notes local; B syncs them.".length,
 		askCalls: 1,
 		openedAsks: 1,
-		firstCallHadText: true,
-		firstOpenedHadText: true,
 	});
 	const explainedOnly = askContextMetrics([
 		prompt,
-		assistant("Options: A or B.", [{ id: "a1" }]),
+		assistant("", [ask("a1", "Options: A or B.")]),
 		askResult("a1"),
 		assistant("A keeps notes local; B syncs them. Reply in chat."),
 	]);
 	assert.deepEqual(explainedOnly.afterFirstAnswer, {
 		textChars: "A keeps notes local; B syncs them. Reply in chat.".length,
+		contextChars: 0,
 		askCalls: 0,
 		openedAsks: 0,
-		firstCallHadText: null,
-		firstOpenedHadText: null,
 	});
 });
 
-test("a fact found only in the form arguments is not in the text", () => {
-	const metrics = askContextMetrics(
+test("a fact counts where the user reads it: text, context, or only the form", () => {
+	const onlyInForm = askContextMetrics(
 		[
 			prompt,
 			assistant("", [
-				{
-					id: "a1",
-					args: { questions: [{ prompt: "Keep deepseek-v4.1-flash?" }] },
-				},
+				ask("a1", "The base model gates text changes.", [
+					{ prompt: "Keep deepseek-v4.1-flash?" },
+				]),
 			]),
 			askResult("a1"),
 		],
 		"deepseek"
 	);
-	assert.deepEqual(metrics.firstAsk, {
+	assert.deepEqual(onlyInForm.firstAsk, {
 		textChars: 0,
+		contextChars: "The base model gates text changes.".length,
 		factInText: false,
+		factInContext: false,
 		factInForm: true,
 	});
+	const inContext = askContextMetrics(
+		[
+			prompt,
+			assistant("", [
+				ask("a1", "The ADR names deepseek-v4.1-flash.", [
+					{ prompt: "Change the base model?" },
+				]),
+			]),
+			askResult("a1"),
+		],
+		"deepseek"
+	);
+	assert.equal(inContext.firstAsk?.factInContext, true);
+	assert.equal(inContext.firstAsk?.factInForm, false);
+});
+
+test("a fact counts as in the form only where the form shows it", () => {
+	const factInForm = (questions: unknown[]) =>
+		askContextMetrics(
+			[
+				prompt,
+				assistant("", [ask("a1", "Pick a model.", questions)]),
+				askResult("a1"),
+			],
+			"deepseek"
+		).firstAsk?.factInForm;
+	const question = { id: "model", prompt: "Keep the current model?" };
+	const hidden = [
+		{ ...question, id: "deepseek", options: [{ label: "Keep current" }] },
+		{ ...question, options: [{ label: "Keep current", value: "deepseek" }] },
+		{
+			...question,
+			type: "single",
+			options: [{ label: "Keep current", preview: "deepseek" }],
+		},
+	];
+	for (const shape of hidden) {
+		assert.equal(factInForm([shape]), false, JSON.stringify(shape));
+	}
+	const shown = [
+		{ ...question, options: [{ label: "Keep deepseek" }] },
+		{
+			...question,
+			options: [{ label: "Keep current", description: "Stay on deepseek." }],
+		},
+		{
+			...question,
+			type: "preview",
+			options: [{ label: "Keep current", preview: "deepseek" }],
+		},
+		// The tool makes a question with previews on every option a preview question.
+		{ ...question, options: [{ label: "Keep current", preview: "deepseek" }] },
+		{ ...question, label: "deepseek", options: [{ label: "Keep current" }] },
+	];
+	for (const shape of shown) {
+		assert.equal(factInForm([shape]), true, JSON.stringify(shape));
+	}
 });

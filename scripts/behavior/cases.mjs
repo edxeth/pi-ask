@@ -42,7 +42,7 @@ export const cases = [
 			"Change the ask_user keymap for submit. Before changing any pi-ask settings or keys, read the pi-ask configuration documentation. Do not edit files in this exercise; report the documented setting you would change.",
 	},
 	{
-		// The user has not read the file, so the fact must reach them as message text before the ask.
+		// The user has not read the file, so the fact must reach them before the form: as message text or in the call's context.
 		id: "context",
 		prompt:
 			"Read docs/adr/0003-base-model-gates-model-facing-text.md. Then ask me whether the base model named there should change. Do not decide for me.",

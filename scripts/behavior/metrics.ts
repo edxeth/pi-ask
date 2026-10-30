@@ -1,4 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai";
+import { prepareAskParams } from "../../src/state/normalize.ts";
 
 type BilledTokens = Pick<
 	Usage,
@@ -96,7 +97,7 @@ interface TranscriptEvent {
 export interface TranscriptEntry {
 	blocks?: string[];
 	cancelReason?: string;
-	/** Tool results only: refusals, invalid payloads and schema failures open no form. */
+	/** Tool results only: invalid payloads and schema failures open no form. */
 	isError?: boolean;
 	role: "assistant" | "toolResult" | "user";
 	text: string;
@@ -172,9 +173,7 @@ export function costTotal(events: readonly TranscriptEvent[]): number {
 	);
 }
 
-const REFUSED = "missing_context";
-
-/** An error result (refusal, invalid payload, schema failure) opened no form, so it is not user input. */
+/** An error result (invalid payload, schema failure) opened no form, so it is not user input. */
 function isUserInput(entry: TranscriptEntry): boolean {
 	return (
 		entry.role === "user" ||
@@ -184,27 +183,13 @@ function isUserInput(entry: TranscriptEntry): boolean {
 	);
 }
 
-/** "deferred": refused, then opened by pi-ask after the explanation turn (from the bridge trace). */
-type AskOutcome = "opened" | "refused" | "invalid" | "deferred";
-
-/** A form pi-ask opened after a refusal, keyed by the refused call; answered unless cancelled. */
-export interface DeferredForm {
-	answered: boolean;
-}
-
-function askOutcome(
-	result: TranscriptEntry | undefined,
-	deferred: DeferredForm | undefined
-): AskOutcome {
-	if (result?.cancelReason === REFUSED) {
-		return deferred ? "deferred" : "refused";
-	}
-	return result?.isError === true ? "invalid" : "opened";
-}
+type AskOutcome = "opened" | "invalid";
 
 interface AskObservation {
-	/** The form was answered, so the next user input is its answer. */
-	answered: boolean;
+	/** The call's own `context` argument, which the chat shows above the form. */
+	context: string;
+	factInContext?: boolean;
+	/** The fact appears in the text that the form shows; `context` is not part of the form. */
 	factInForm?: boolean;
 	factInText?: boolean;
 	/** User inputs seen before this call; the prompt is the first input. */
@@ -212,12 +197,8 @@ interface AskObservation {
 	outcome: AskOutcome;
 	/** Questions of this call, as the form shows them. */
 	questions: Array<{ label?: string; prompt?: string }>;
-	/** Text the user read before the form opened; a deferred form opens after the explanation turn. */
-	textBeforeForm: number;
-	/** That text itself, to find questions that it repeats. */
-	textBeforeFormValue: string;
 	/** Assistant message text since the last user input, including the calling message. */
-	textChars: number;
+	text: string;
 }
 
 interface AskObservations {
@@ -244,6 +225,52 @@ function questionsOf(args: unknown): AskObservation["questions"] {
 	);
 }
 
+function contextOf(args: unknown): string {
+	const context = (args as { context?: unknown } | null)?.context;
+	return typeof context === "string" ? context : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object";
+}
+
+/**
+ * The text that the form shows for a call: the title, each question's tab label and prompt, and
+ * each option's label and description, with option previews only in a preview question. Ids and
+ * option values stay hidden. The arguments are prepared as the tool prepares them, so derived
+ * labels and preview types count.
+ */
+function formTextOf(args: unknown): string {
+	const form = prepareAskParams(args);
+	if (!isRecord(form)) {
+		return "";
+	}
+	const questions = Array.isArray(form.questions) ? form.questions : [];
+	return [form.title, ...questions.flatMap(questionTexts)]
+		.filter((text) => typeof text === "string")
+		.join("\n");
+}
+
+function questionTexts(question: unknown): unknown[] {
+	if (!isRecord(question)) {
+		return [];
+	}
+	const options = Array.isArray(question.options) ? question.options : [];
+	return [
+		question.label,
+		question.prompt,
+		...options.flatMap((option) =>
+			isRecord(option)
+				? [
+						option.label,
+						option.description,
+						question.type === "preview" ? option.preview : undefined,
+					]
+				: []
+		),
+	];
+}
+
 function words(text: string): string[] {
 	return text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
 }
@@ -258,8 +285,24 @@ function trigrams(list: readonly string[]): Set<string> {
 
 const QUESTION_NUMBER = /\bQ(\d+)\b/;
 const PARAGRAPH = /\n\s*\n/;
-// A repeated question shares at least half of its word trigrams with the text.
+// Text repeats a passage when it holds at least half of the passage's word trigrams.
 const REPEATED_SHARE = 0.5;
+
+/** Whether `text` holds most of `passage`'s wording; a passage under three words has no trigrams. */
+function holdsMostOf(text: string, passage: string): boolean {
+	const grams = trigrams(words(passage));
+	if (grams.size === 0) {
+		return false;
+	}
+	const textGrams = trigrams(words(text));
+	let shared = 0;
+	for (const gram of grams) {
+		if (textGrams.has(gram)) {
+			shared++;
+		}
+	}
+	return shared / grams.size >= REPEATED_SHARE;
+}
 
 /** The text asks the question again: a paragraph that starts with its number, or most of its wording. */
 function isRepeated(
@@ -274,22 +317,15 @@ function isRepeated(
 		return true;
 	}
 	// A prompt under three words has no trigrams; only its number can show a repeat.
-	const grams = trigrams(words(question.prompt ?? ""));
-	if (grams.size === 0) {
-		return false;
-	}
-	const textGrams = trigrams(words(text));
-	let shared = 0;
-	for (const gram of grams) {
-		if (textGrams.has(gram)) {
-			shared++;
-		}
-	}
-	return shared / grams.size >= REPEATED_SHARE;
+	return holdsMostOf(text, question.prompt ?? "");
+}
+
+/** What the user read in the chat before the form: the message text, then the call's context. */
+function explanationOf(ask: AskObservation): string {
+	return `${ask.text}\n\n${ask.context}`;
 }
 
 interface AskWindow {
-	deferredForms: ReadonlyMap<string | undefined, DeferredForm>;
 	fact: RegExp | undefined;
 	inputIndex: number;
 	results: ReadonlyMap<string | undefined, TranscriptEntry>;
@@ -300,22 +336,19 @@ function observeCall(
 	call: NonNullable<TranscriptEntry["toolCalls"]>[number],
 	window: AskWindow
 ): AskObservation {
-	const deferred = window.deferredForms.get(call.id);
-	const outcome = askOutcome(window.results.get(call.id), deferred);
+	const context = contextOf(call.args);
 	return {
 		inputIndex: window.inputIndex,
-		outcome,
+		outcome:
+			window.results.get(call.id)?.isError === true ? "invalid" : "opened",
 		questions: questionsOf(call.args),
-		answered:
-			outcome === "opened" ||
-			(outcome === "deferred" && Boolean(deferred?.answered)),
-		textChars: window.text.trim().length,
-		textBeforeForm: window.text.trim().length,
-		textBeforeFormValue: window.text,
+		text: window.text,
+		context,
 		...(window.fact
 			? {
 					factInText: window.fact.test(window.text),
-					factInForm: window.fact.test(JSON.stringify(call.args ?? null)),
+					factInContext: window.fact.test(context),
+					factInForm: window.fact.test(formTextOf(call.args)),
 				}
 			: {}),
 	};
@@ -323,8 +356,7 @@ function observeCall(
 
 function observeAsks(
 	transcript: readonly TranscriptEntry[],
-	factPattern: string | undefined,
-	deferredForms: ReadonlyMap<string | undefined, DeferredForm>
+	factPattern: string | undefined
 ): AskObservations {
 	const fact = factPattern ? new RegExp(factPattern, "i") : undefined;
 	const results = new Map(
@@ -336,12 +368,10 @@ function observeAsks(
 	);
 	const asks: AskObservation[] = [];
 	const textAfterInput: number[] = [0];
-	const windowAfterInput: string[] = [""];
 	let windowText = "";
 	for (const entry of transcript) {
 		if (isUserInput(entry)) {
 			textAfterInput.push(0);
-			windowAfterInput.push("");
 			windowText = "";
 			continue;
 		}
@@ -351,37 +381,22 @@ function observeAsks(
 		const inputIndex = textAfterInput.length - 1;
 		windowText += `${entry.text}\n`;
 		textAfterInput[inputIndex] += entry.text.trim().length;
-		windowAfterInput[inputIndex] = windowText;
-		const window = {
-			deferredForms,
-			fact,
-			inputIndex,
-			results,
-			text: windowText,
-		};
+		const window = { fact, inputIndex, results, text: windowText };
 		asks.push(
 			...(entry.toolCalls ?? [])
 				.filter((call) => call.name === "ask_user")
 				.map((call) => observeCall(call, window))
 		);
 	}
-	// A deferred form opened after the explanation turn: the user read the whole window's text.
-	for (const ask of asks) {
-		if (ask.outcome === "deferred") {
-			ask.textBeforeForm = textAfterInput[ask.inputIndex] ?? 0;
-			ask.textBeforeFormValue = windowAfterInput[ask.inputIndex] ?? "";
-		}
-	}
 	return { asks, textAfterInput };
 }
 
-const isOpened = (ask: AskObservation) =>
-	ask.outcome === "opened" || ask.outcome === "deferred";
+const isOpened = (ask: AskObservation) => ask.outcome === "opened";
+const textChars = (ask: AskObservation) => ask.text.trim().length;
+const contextChars = (ask: AskObservation) => ask.context.trim().length;
 
 function followUpAfterFirstAnswer(observed: AskObservations) {
-	const firstOpened = observed.asks.find(
-		(ask) => isOpened(ask) && ask.answered
-	);
+	const firstOpened = observed.asks.find(isOpened);
 	if (!firstOpened) {
 		return null;
 	}
@@ -390,76 +405,55 @@ function followUpAfterFirstAnswer(observed: AskObservations) {
 	const laterOpened = later.filter(isOpened);
 	return {
 		textChars: observed.textAfterInput[answerInput] ?? 0,
+		contextChars: laterOpened.reduce((sum, ask) => sum + contextChars(ask), 0),
 		askCalls: later.length,
 		openedAsks: laterOpened.length,
-		firstCallHadText: later[0] ? later[0].textChars > 0 : null,
-		firstOpenedHadText: laterOpened[0]
-			? laterOpened[0].textBeforeForm > 0
-			: null,
 	};
 }
 
-/** After each refusal: did the next assistant message explain in text and end the turn, or call a tool again? */
-function refusalFollowUps(transcript: readonly TranscriptEntry[]) {
-	let explainedThenEnded = 0;
-	let calledAgain = 0;
-	transcript.forEach((entry, index) => {
-		if (entry.role !== "toolResult" || entry.cancelReason !== REFUSED) {
-			return;
-		}
-		const next = transcript
-			.slice(index + 1)
-			.find((later) => later.role === "assistant");
-		if ((next?.toolCalls ?? []).length > 0) {
-			calledAgain++;
-		} else if (next?.text.trim()) {
-			explainedThenEnded++;
-		}
-	});
-	return { explainedThenEnded, calledAgain };
-}
-
 /**
- * Whether the user could read an explanation before each ask_user form.
- * Text counts when any assistant message since the last user input has a text block.
+ * Whether the user could read an explanation before each ask_user form: the message text
+ * since the last user input, and the call's `context`, which the chat shows above the form.
  */
 export function askContextMetrics(
 	transcript: readonly TranscriptEntry[],
-	factPattern?: string,
-	deferredForms: ReadonlyMap<string | undefined, DeferredForm> = new Map()
+	factPattern?: string
 ) {
-	const observed = observeAsks(transcript, factPattern, deferredForms);
+	const observed = observeAsks(transcript, factPattern);
 	const { asks } = observed;
 	const opened = asks.filter(isOpened);
 	const first = asks[0];
 	return {
 		askCalls: asks.length,
 		openedAsks: opened.length,
-		refusedAsks: asks.filter(
-			(ask) => ask.outcome === "refused" || ask.outcome === "deferred"
-		).length,
 		invalidAsks: asks.filter((ask) => ask.outcome === "invalid").length,
-		asksWithoutText: asks.filter((ask) => ask.textChars === 0).length,
-		openedWithoutText: opened.filter((ask) => ask.textBeforeForm === 0).length,
-		// Questions of opened forms, and those the text before the form already asked.
+		asksWithoutContext: asks.filter((ask) => contextChars(ask) === 0).length,
+		openedWithoutExplanation: opened.filter(
+			(ask) => textChars(ask) === 0 && contextChars(ask) === 0
+		).length,
+		// Forms whose context mostly repeats the message text before it: the explanation written twice.
+		explainedTwice: opened.filter((ask) => holdsMostOf(ask.text, ask.context))
+			.length,
+		// Questions of opened forms, and those that the explanation before the form already asked.
 		formQuestions: opened.reduce((sum, ask) => sum + ask.questions.length, 0),
 		repeatedQuestions: opened.reduce(
 			(sum, ask) =>
 				sum +
 				ask.questions.filter((question) =>
-					isRepeated(question, ask.textBeforeFormValue)
+					isRepeated(question, explanationOf(ask))
 				).length,
 			0
 		),
 		firstAsk: first
 			? {
-					textChars: first.textChars,
+					textChars: textChars(first),
+					contextChars: contextChars(first),
 					factInText: first.factInText,
+					factInContext: first.factInContext,
 					factInForm: first.factInForm,
 				}
 			: null,
 		afterFirstAnswer: followUpAfterFirstAnswer(observed),
-		afterRefusal: refusalFollowUps(transcript),
 	};
 }
 
