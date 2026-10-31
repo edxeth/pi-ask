@@ -265,6 +265,26 @@ test("an answered ask starts a new window, so the next ask needs new text or con
 	});
 });
 
+test("a second ask in the same message opens after the first answer", () => {
+	// ask_user runs sequentially, so a2's form opens only after the user answers a1.
+	const metrics = askContextMetrics([
+		prompt,
+		assistant("Two choices.", [
+			ask("a1", "First explanation."),
+			ask("a2", "Second explanation."),
+		]),
+		askResult("a1"),
+		askResult("a2"),
+	]);
+	assert.equal(metrics.firstAsk?.contextChars, "First explanation.".length);
+	assert.deepEqual(metrics.afterFirstAnswer, {
+		textChars: 0,
+		contextChars: "Second explanation.".length,
+		askCalls: 1,
+		openedAsks: 1,
+	});
+});
+
 test("context that repeats the message text before it counts as explained twice", () => {
 	const explanation =
 		"Files stay readable outside the app, while a database makes search faster.";

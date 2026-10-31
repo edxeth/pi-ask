@@ -369,7 +369,29 @@ function observeAsks(
 	const asks: AskObservation[] = [];
 	const textAfterInput: number[] = [0];
 	let windowText = "";
+	// ask_user runs sequentially: a call opens its form only after the results of the
+	// earlier calls in its message, so one answer can open the next form of that message.
+	// Every form of a message still follows that message's text in the chat.
+	let unopened: NonNullable<TranscriptEntry["toolCalls"]> = [];
+	let unopenedText = "";
+	const open = (count: number) => {
+		const window = {
+			fact,
+			inputIndex: textAfterInput.length - 1,
+			results,
+			text: unopenedText,
+		};
+		asks.push(
+			...unopened.splice(0, count).map((call) => observeCall(call, window))
+		);
+	};
 	for (const entry of transcript) {
+		if (entry.role === "toolResult" && entry.toolName === "ask_user") {
+			open(unopened.findIndex((call) => call.id === entry.toolCallId) + 1);
+		} else {
+			// A call without a result opened, if at all, before the next message.
+			open(unopened.length);
+		}
 		if (isUserInput(entry)) {
 			textAfterInput.push(0);
 			windowText = "";
@@ -378,16 +400,14 @@ function observeAsks(
 		if (entry.role !== "assistant") {
 			continue;
 		}
-		const inputIndex = textAfterInput.length - 1;
 		windowText += `${entry.text}\n`;
-		textAfterInput[inputIndex] += entry.text.trim().length;
-		const window = { fact, inputIndex, results, text: windowText };
-		asks.push(
-			...(entry.toolCalls ?? [])
-				.filter((call) => call.name === "ask_user")
-				.map((call) => observeCall(call, window))
+		textAfterInput[textAfterInput.length - 1] += entry.text.trim().length;
+		unopened = (entry.toolCalls ?? []).filter(
+			(call) => call.name === "ask_user"
 		);
+		unopenedText = windowText;
 	}
+	open(unopened.length);
 	return { asks, textAfterInput };
 }
 
