@@ -140,7 +140,7 @@ Update the relevant docs in the same change:
 - After every merge, run the 4 gates on `main`. Branches that pass alone can fail together.
 - CI (GitHub Actions, `.github/workflows/ci.yml`) runs the 4 gates on Linux for pull requests and `main` pushes. Run the gates locally too. Tests that touch the filesystem must not assume macOS paths; `@` file completion needs `fd` (CI installs `fd-find`).
 - Release: bump `package.json` and `CHANGELOG.md` through a PR, then `gh release create vX.Y.Z -R FasalZein/pi-ask --target <merge sha>`. Never publish to npm (ADR 0004, ADR 0009).
-- When running `scripts/behavior/` on Opus: the harness passes `--no-extensions`, so `anthropic/*` fails when its auth comes from the `pi-claude-auth` extension; use `cpa/claude-opus-5-5` there. Interview runs can exceed 120 s; set `PI_ASK_BEHAVIOR_TIMEOUT_MS=300000`.
+- When running `scripts/behavior/` on Opus: the harness passes `--no-extensions`, so `anthropic/*` fails with "out of extra usage" when its auth comes from the `pi-claude-auth` extension; use `cpa/claude-opus-5-5` there when that provider is available. Interview runs can exceed 120 s; set `PI_ASK_BEHAVIOR_TIMEOUT_MS=300000`.
 
 ## Agent skills
 
