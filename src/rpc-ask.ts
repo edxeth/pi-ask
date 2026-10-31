@@ -78,6 +78,7 @@ async function collectRpcAsk(
 			source: "tool",
 			toolCallId: options.toolCallId,
 			title: state.title,
+			context: params.context,
 			questions: state.questions,
 			onAbort: abort,
 			onSubmit: submit,

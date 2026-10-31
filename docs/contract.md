@@ -334,7 +334,7 @@ Channels:
 - `pi-ask:submit`
 - `pi-ask:submit-result`
 
-Remote submissions must be explicit `{ kind: "answer" }` or `{ kind: "cancel" }` responses. Remote answers use question ids and normalized option values from the started event. pi-ask validates ids and values, recomputes labels/indices, and does not infer approval semantics from labels.
+Remote submissions must be explicit `{ kind: "answer" }` or `{ kind: "cancel" }` responses. The started event carries the ask's non-blank `context` when it has one, so a remote UI can show the explanation before the questions. Remote answers use question ids and normalized option values from the started event. pi-ask validates ids and values, recomputes labels/indices, and does not infer approval semantics from labels.
 
 See [`remote-events.md`](remote-events.md) for payload shapes, examples, and a local smoke test.
 

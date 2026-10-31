@@ -27,12 +27,13 @@ type PiAskStartedEvent = {
   toolCallId?: string;
   source: "tool" | "answer" | "answer:again" | "ask:replay" | "ask:resume";
   title?: string;
+  context?: string;
   questions: AskQuestion[];
   createdAt: number;
 };
 ```
 
-Use `flowId` for submit/correlation. Use `questions[].id` and `questions[].options[].value` for answers. `ask:resume` identifies a form recovered from an interrupted tool call. Started-event options preserve the public optional `recommended` boolean, which is presentation metadata only and never changes remote submission values or labels.
+Use `flowId` for submit/correlation. Use `questions[].id` and `questions[].options[].value` for answers. `ask:resume` identifies a form recovered from an interrupted tool call. `context` is the ask's trimmed explanation (the `ask_user` `context` argument); show it before the questions. It is absent when the ask has none, for example an `/answer` extraction or a replayed ask stored before the argument existed. Started-event options preserve the public optional `recommended` boolean, which is presentation metadata only and never changes remote submission values or labels.
 
 ## Submit an answer
 

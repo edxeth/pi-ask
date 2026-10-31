@@ -14,7 +14,10 @@ import {
 	type RemoteAskSubmitResultEvent,
 } from "../src/remote-ask.ts";
 import { createInitialState } from "../src/state/create.ts";
+import type { AskParams } from "../src/types.ts";
 import { runAskFlow } from "../src/ui/controller.ts";
+
+type AskFlowRemote = Parameters<typeof runAskFlow>[2]["remote"];
 
 test("remote bridge uses fork-scoped channels", () => {
 	assert.equal(PI_ASK_STARTED_EVENT, "pi-ask:started");
@@ -369,6 +372,88 @@ test("remote submit resolves an active ask flow and emits lifecycle events", asy
 	assert.equal(completed.result.cancelled, false);
 
 	getAskConfigStore().setConfig(DEFAULT_ASK_CONFIG);
+});
+
+async function startedEventFor(
+	params: AskParams,
+	remote: Omit<NonNullable<AskFlowRemote>, "runtime">
+): Promise<RemoteAskStartedEvent> {
+	const bus = new TestEventBus();
+	const remoteAsk = createRemoteAskRuntime(bus as never);
+	bus.on(PI_ASK_STARTED_EVENT, (data) => {
+		bus.emit(PI_ASK_SUBMIT_EVENT, {
+			version: 1,
+			requestId: "request-1",
+			flowId: (data as RemoteAskStartedEvent).flowId,
+			response: { kind: "cancel" },
+		});
+	});
+	await runAskFlow(
+		{
+			cwd: process.cwd(),
+			mode: "tui",
+			ui: {
+				custom(callback: (...args: unknown[]) => unknown) {
+					return new Promise((resolve) => {
+						callback(
+							{
+								requestRender() {
+									// Rendering is not needed for this lifecycle test.
+								},
+							},
+							plainTheme(),
+							{},
+							resolve
+						);
+					});
+				},
+			},
+		} as never,
+		params,
+		{
+			exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+			remote: { runtime: remoteAsk, ...remote },
+		}
+	);
+	const started = bus.events.find(
+		(event) => event.channel === PI_ASK_STARTED_EVENT
+	)?.data as RemoteAskStartedEvent | undefined;
+	assert(started, "expected a started event");
+	return started;
+}
+
+const decisionQuestions: AskParams["questions"] = [
+	{
+		id: "decision",
+		prompt: "Proceed?",
+		options: [{ value: "yes", label: "Yes" }],
+	},
+];
+
+test("started event carries the tool call context for remote clients", async () => {
+	const started = await startedEventFor(
+		{
+			context: "  Yes keeps the current plan.  ",
+			questions: decisionQuestions,
+		},
+		{ source: "tool", toolCallId: "call-1" }
+	);
+
+	assert.equal(started.context, "Yes keeps the current plan.");
+});
+
+test("started event omits context when the ask has none", async () => {
+	const replayed = await startedEventFor(
+		{ questions: decisionQuestions },
+		{ source: "ask:replay" }
+	);
+	const blank = await startedEventFor(
+		{ context: "   ", questions: decisionQuestions },
+		{ source: "tool", toolCallId: "call-2" }
+	);
+
+	assert.equal("context" in replayed, false);
+	assert.equal("context" in blank, false);
 });
 
 function plainTheme() {

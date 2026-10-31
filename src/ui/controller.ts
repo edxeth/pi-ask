@@ -950,6 +950,7 @@ function startRemoteFlow(
 		source: remote.source,
 		toolCallId: remote.toolCallId,
 		title: controller.state.title,
+		context: params.context,
 		questions: controller.state.questions,
 		onSubmit: (response) => submitRemoteResponse(controller, response),
 	});

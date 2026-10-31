@@ -487,6 +487,8 @@ test("resumed submit persists dismissal, delivers an answer, and emits remote li
 	const started = findEvent<RemoteAskStartedEvent>(bus, PI_ASK_STARTED_EVENT);
 	assert.equal(started.source, "ask:resume");
 	assert.equal(started.toolCallId, "call-1");
+	// This stored payload predates the context argument.
+	assert.equal("context" in started, false);
 	const completed = findEvent<RemoteAskCompletedEvent>(
 		bus,
 		PI_ASK_COMPLETED_EVENT

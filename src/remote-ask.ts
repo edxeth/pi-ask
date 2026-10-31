@@ -35,6 +35,8 @@ export type RemoteAskResponse =
 	| { kind: "cancel" };
 
 export interface RemoteAskStartedEvent {
+	/** The ask's explanation, shown before the questions; absent when the ask has none. */
+	context?: string;
 	createdAt: number;
 	flowId: string;
 	questions: AskQuestion[];
@@ -80,6 +82,7 @@ export interface RemoteAskFlowOptions {
 }
 
 export interface RemoteAskFlowInput extends RemoteAskFlowOptions {
+	context?: string;
 	onAbort?: () => void;
 	onSubmit: (response: RemoteAskResponse) => RemoteAskSubmitResolution;
 	questions: AskQuestion[];
@@ -168,6 +171,7 @@ function startRemoteAskFlow(
 	const flowId = createFlowId(flow.toolCallId);
 	let completed = false;
 	activeFlows.set(flowId, { ...flow, flowId });
+	const context = flow.context?.trim();
 	queueMicrotask(() => {
 		if (completed || !activeFlows.has(flowId)) {
 			return;
@@ -179,6 +183,7 @@ function startRemoteAskFlow(
 			source: flow.source,
 			title: flow.title,
 			questions: cloneQuestions(flow.questions),
+			...(context ? { context } : {}),
 			createdAt: Date.now(),
 		} satisfies RemoteAskStartedEvent);
 	});
