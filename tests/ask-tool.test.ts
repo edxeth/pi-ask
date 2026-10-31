@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import {
 	initTheme,
 	ToolExecutionComponent,
@@ -25,6 +26,7 @@ const MISSING_OPTION_VALUE_RE =
 const EMPTY_QUESTIONS_RE = /questions: At least one question is required/;
 const INVALID_TYPE_RE =
 	/questions\[0\]\.type: Question 1: invalid type "grid"; expected "single", "multi", or "preview"/;
+const CONTEXT_ARGUMENT_RE = /context/;
 const HAS_UI = "hasUI";
 const CONTEXT = "Speed and safety pull this plan in different directions.";
 const BLANK_CONTEXT_ISSUE = {
@@ -793,6 +795,25 @@ test("an ask without context returns an invalid payload, opens no form and saves
 		);
 		assert.equal(opened, false);
 		assert.deepEqual(entries, []);
+	}
+});
+
+test("a number or boolean context fails pi's argument validation instead of becoming text", () => {
+	// pi converts primitives to the schema type before validation; the call renderer still
+	// reads the raw argument, so a converted context would open a form with no explanation.
+	const { tool } = registerMockTool();
+	for (const context of [42, true]) {
+		const toolCall = {
+			type: "toolCall",
+			id: "call-non-string-context",
+			name: "ask_user",
+			arguments: tool.prepareArguments({ ...sampleParams(), context }),
+		};
+		assert.throws(
+			() => validateToolArguments(tool as never, toolCall as never),
+			CONTEXT_ARGUMENT_RE,
+			String(context)
+		);
 	}
 });
 

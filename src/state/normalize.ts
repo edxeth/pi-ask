@@ -38,6 +38,23 @@ export function collectValidationIssues(
 	return collector.issues;
 }
 
+/**
+ * prepareAskParams for an `ask_user` call. pi converts a number or boolean to the schema's
+ * string type before validation, but the call renderer reads the raw argument, so a converted
+ * `context` would open a form with no explanation. Dropping it makes validation report it missing.
+ */
+export function prepareAskToolArguments(input: unknown): unknown {
+	if (
+		!isRecord(input) ||
+		input.context === undefined ||
+		typeof input.context === "string"
+	) {
+		return prepareAskParams(input);
+	}
+	const { context: _nonStringContext, ...rest } = input;
+	return prepareAskParams(rest);
+}
+
 export function prepareAskParams(input: unknown): unknown {
 	if (!(isRecord(input) && Array.isArray(input.questions))) {
 		return input;

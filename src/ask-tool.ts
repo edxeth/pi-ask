@@ -22,7 +22,7 @@ import {
 } from "./prompt-text.ts";
 import type { RemoteAskRuntime } from "./remote-ask.ts";
 import { runRpcAskFlow } from "./rpc-ask.ts";
-import { prepareAskParams } from "./state/normalize.ts";
+import { prepareAskToolArguments } from "./state/normalize.ts";
 import { summarizeResult, toAskResult } from "./state/result.ts";
 import type { AskParams, AskState } from "./types.ts";
 import { runAskFlow } from "./ui/controller.ts";
@@ -42,7 +42,7 @@ export function registerAskTool(
 		promptSnippet: ASK_TOOL_PROMPT_SNIPPET,
 		promptGuidelines: [...ASK_TOOL_PROMPT_GUIDELINES],
 		parameters: AskToolParamsSchema,
-		prepareArguments: (args) => prepareAskParams(args) as AskParams,
+		prepareArguments: (args) => prepareAskToolArguments(args) as AskParams,
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			executeAskTool(
 				pi,
